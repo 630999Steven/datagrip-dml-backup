@@ -69,24 +69,21 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
 
         add(JBScrollPane(table), BorderLayout.CENTER)
 
-        // 工具栏：筛选行 + 操作行，使用 GridBagLayout 防止组件被挤出
+        // 工具栏：筛选行 + 操作行，WrapLayout 自动换行
         dataSourceComboBox.addActionListener { this.updateDatabaseComboBox(); this.filterRecords() }
         databaseComboBox.addActionListener { this.filterRecords() }
 
-        val filterRow = JPanel(java.awt.GridBagLayout())
-        val fc = java.awt.GridBagConstraints().apply { fill = java.awt.GridBagConstraints.HORIZONTAL; insets = java.awt.Insets(1, 2, 1, 2) }
-        fc.weightx = 0.0; filterRow.add(JLabel("DataSource:"), fc)
-        fc.weightx = 1.0; filterRow.add(dataSourceComboBox, fc)
-        fc.weightx = 0.0; filterRow.add(JLabel("Database:"), fc)
-        fc.weightx = 1.0; filterRow.add(databaseComboBox, fc)
+        val filterRow = JPanel(WrapLayout(FlowLayout.LEFT, 4, 2))
+        filterRow.add(JLabel("DataSource:"))
+        filterRow.add(dataSourceComboBox)
+        filterRow.add(JLabel("Database:"))
+        filterRow.add(databaseComboBox)
 
-        val actionRow = JPanel(java.awt.GridBagLayout())
-        val ac = java.awt.GridBagConstraints().apply { insets = java.awt.Insets(1, 2, 1, 2) }
-        actionRow.add(this.createButton("Rollback") { this.doRollback() }, ac)
-        actionRow.add(this.createButton("Refresh") { this.loadRecords() }, ac)
-        actionRow.add(this.createButton("Clear") { this.doClear() }, ac)
-        actionRow.add(this.createButton("Settings") { ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java) }, ac)
-        ac.weightx = 1.0; ac.fill = java.awt.GridBagConstraints.HORIZONTAL; actionRow.add(JPanel(), ac) // 右侧填充
+        val actionRow = JPanel(WrapLayout(FlowLayout.LEFT, 4, 2))
+        actionRow.add(this.createButton("Rollback") { this.doRollback() })
+        actionRow.add(this.createButton("Refresh") { this.loadRecords() })
+        actionRow.add(this.createButton("Clear") { this.doClear() })
+        actionRow.add(this.createButton("Settings") { ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java) })
 
         val toolbar = JPanel()
         toolbar.layout = BoxLayout(toolbar, BoxLayout.Y_AXIS)
@@ -343,6 +340,44 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         } catch (e: Exception) {
             log.error("Rollback failed", e)
             Messages.showErrorDialog(project, "Rollback failed: ${e.message}", "DML Backup")
+        }
+    }
+}
+
+/**
+ * 自动换行的 FlowLayout：空间不够时组件换到下一行，而非隐藏
+ */
+class WrapLayout(align: Int = FlowLayout.LEFT, hgap: Int = 5, vgap: Int = 5) : FlowLayout(align, hgap, vgap) {
+    override fun preferredLayoutSize(target: java.awt.Container): java.awt.Dimension {
+        return this.computeSize(target, true)
+    }
+
+    override fun minimumLayoutSize(target: java.awt.Container): java.awt.Dimension {
+        return this.computeSize(target, false)
+    }
+
+    private fun computeSize(target: java.awt.Container, preferred: Boolean): java.awt.Dimension {
+        synchronized(target.treeLock) {
+            val targetWidth = if (target.width > 0) target.width else Int.MAX_VALUE
+            val insets = target.insets
+            val maxWidth = targetWidth - insets.left - insets.right - hgap * 2
+            var x = 0
+            var y = 0
+            var rowHeight = 0
+
+            for (comp in target.components) {
+                if (!comp.isVisible) continue
+                val d = if (preferred) comp.preferredSize else comp.minimumSize
+                if (x > 0 && x + d.width > maxWidth) {
+                    y += rowHeight + vgap
+                    x = 0
+                    rowHeight = 0
+                }
+                x += d.width + hgap
+                rowHeight = maxOf(rowHeight, d.height)
+            }
+            y += rowHeight + insets.top + insets.bottom + vgap * 2
+            return java.awt.Dimension(targetWidth, y)
         }
     }
 }
