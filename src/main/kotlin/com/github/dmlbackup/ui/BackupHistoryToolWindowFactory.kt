@@ -53,9 +53,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         override fun isCellEditable(row: Int, column: Int) = false
     }
 
-    private val table = object : JBTable(tableModel) {
-        override fun getToolTipText(e: MouseEvent): String? = null
-    }.apply {
+    private val table = JBTable(tableModel).apply {
         setSelectionMode(ListSelectionModel.SINGLE_INTERVAL_SELECTION)
         setCellSelectionEnabled(true)
         setStriped(true)
@@ -64,8 +62,6 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         rowHeight = JBUI.scale(24)
         tableHeader.reorderingAllowed = false
         emptyText.text = "No DML backup records"
-        // 禁用悬停/单击展开预览
-        setExpandableItemsEnabled(false)
 
         columnModel.getColumn(0).preferredWidth = JBUI.scale(35)
         columnModel.getColumn(1).preferredWidth = JBUI.scale(120)
@@ -105,9 +101,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         table.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
-            override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 2) this@BackupHistoryPanel.showCellPopup(e)
-            }
+            override fun mouseClicked(e: MouseEvent) {}
         })
 
         this.loadRecords()
@@ -266,35 +260,6 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         menu.add(deleteItem)
 
         menu.show(table, e.x, e.y)
-    }
-
-    /** 双击单元格弹出浮层显示完整值 */
-    private fun showCellPopup(e: MouseEvent) {
-        val row = table.rowAtPoint(e.point)
-        val col = table.columnAtPoint(e.point)
-        if (row < 0 || col < 0) return
-        val value = table.getValueAt(row, col)?.toString() ?: ""
-        if (value.isEmpty()) return
-
-        val textArea = JTextArea(value).apply {
-            isEditable = false
-            lineWrap = true
-            wrapStyleWord = true
-            font = table.font
-            rows = minOf(value.length / 30 + 1, 8)
-            columns = 30
-        }
-        val popup = JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(javax.swing.JScrollPane(textArea), textArea)
-            .setRequestFocus(true)
-            .setCancelOnClickOutside(true)
-            .setCancelOnOtherWindowOpen(true)
-            .createPopup()
-
-        val cellRect = table.getCellRect(row, col, true)
-        val point = java.awt.Point(cellRect.x, cellRect.y + cellRect.height)
-        SwingUtilities.convertPointToScreen(point, table)
-        popup.showInScreenCoordinates(table, point)
     }
 
     // ==================== Operations ====================
