@@ -48,7 +48,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
     private val log = Logger.getInstance(BackupHistoryPanel::class.java)
     private val timeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
-    private val columnNames = arrayOf("ID", "Time", "Type", "Table", "Database", "DataSource", "Rows", "Status")
+    private val columnNames = arrayOf("", "Time", "Type", "Table", "Database", "DataSource", "Rows", "Status")
     private val tableModel = object : DefaultTableModel(columnNames, 0) {
         override fun isCellEditable(row: Int, column: Int) = false
     }
@@ -97,9 +97,18 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         // 表格
         setContent(ScrollPaneFactory.createScrollPane(table, 0))
 
-        // 右键菜单 + 双击查看
+        // 点击 ID 列选中整行 + 右键菜单 + 双击查看
         table.addMouseListener(object : MouseAdapter() {
-            override fun mousePressed(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
+            override fun mousePressed(e: MouseEvent) {
+                // 点击第 0 列（ID）时选中整行
+                val col = table.columnAtPoint(e.point)
+                val row = table.rowAtPoint(e.point)
+                if (col == 0 && row >= 0) {
+                    table.setRowSelectionInterval(row, row)
+                    table.setColumnSelectionInterval(0, table.columnCount - 1)
+                }
+                this@BackupHistoryPanel.handlePopup(e)
+            }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseClicked(e: MouseEvent) {
                 if (e.clickCount == 2) this@BackupHistoryPanel.showCellPopup(e)
