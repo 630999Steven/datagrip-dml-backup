@@ -18,7 +18,6 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.ScrollPaneFactory
-import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
@@ -54,12 +53,15 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         override fun isCellEditable(row: Int, column: Int) = false
     }
 
+    private val defaultRowHeight = JBUI.scale(24)
+    private var expandedRow = -1
+
     private val table = JBTable(tableModel).apply {
         setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
         setStriped(true)
         setShowGrid(true)
         gridColor = JBUI.CurrentTheme.CustomFrameDecorations.separatorForeground()
-        rowHeight = JBUI.scale(24)
+        rowHeight = defaultRowHeight
         tableHeader.reorderingAllowed = false
         emptyText.text = "No DML backup records"
 
@@ -102,7 +104,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             override fun mousePressed(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 2) this@BackupHistoryPanel.showCellValue(e)
+                if (e.clickCount == 2) this@BackupHistoryPanel.toggleRowExpand(e)
             }
         })
 
@@ -264,32 +266,34 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         menu.show(table, e.x, e.y)
     }
 
-    private fun showCellValue(e: MouseEvent) {
+    /** 双击展开/折叠行高度，显示完整内容 */
+    private fun toggleRowExpand(e: MouseEvent) {
         val row = table.rowAtPoint(e.point)
-        val col = table.columnAtPoint(e.point)
-        if (row < 0 || col < 0) return
-        val value = table.getValueAt(row, col)?.toString() ?: ""
-        if (value.isEmpty()) return
+        if (row < 0) return
 
-        val textArea = JTextArea(value)
-        textArea.isEditable = false
-        textArea.lineWrap = true
-        textArea.wrapStyleWord = true
-        textArea.font = table.font
-        textArea.rows = minOf(value.length / 30 + 1, 8)
-        textArea.columns = 30
+        // 折叠之前展开的行
+        if (expandedRow >= 0 && expandedRow < table.rowCount && expandedRow != row) {
+            table.setRowHeight(expandedRow, defaultRowHeight)
+        }
 
-        val popup = JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(JBScrollPane(textArea), textArea)
-            .setRequestFocus(true)
-            .setCancelOnClickOutside(true)
-            .setCancelOnOtherWindowOpen(true)
-            .createPopup()
-
-        val cellRect = table.getCellRect(row, col, true)
-        val point = java.awt.Point(cellRect.x, cellRect.y + cellRect.height)
-        SwingUtilities.convertPointToScreen(point, table)
-        popup.showInScreenCoordinates(table, point)
+        if (expandedRow == row) {
+            // 再次双击折叠
+            table.setRowHeight(row, defaultRowHeight)
+            expandedRow = -1
+        } else {
+            // 计算需要的高度：取所有列内容最大需要的行数
+            var maxLines = 1
+            for (col in 0 until table.columnCount) {
+                val value = table.getValueAt(row, col)?.toString() ?: ""
+                val colWidth = table.columnModel.getColumn(col).width
+                val charPerLine = maxOf(colWidth / (table.font.size / 2 + 1), 1)
+                val lines = maxOf((value.length + charPerLine - 1) / charPerLine, 1)
+                maxLines = maxOf(maxLines, lines)
+            }
+            val expandedHeight = minOf(maxLines, 10) * defaultRowHeight
+            table.setRowHeight(row, maxOf(expandedHeight, defaultRowHeight))
+            expandedRow = row
+        }
     }
 
     // ==================== Operations ====================
