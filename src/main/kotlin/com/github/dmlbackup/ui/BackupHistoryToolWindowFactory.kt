@@ -78,6 +78,7 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         filterRow.add(databaseComboBox)
 
         val actionRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        actionRow.add(this.createButton("Rollback") { this.doRollback() })
         actionRow.add(this.createButton("Refresh") { this.loadRecords() })
         actionRow.add(this.createButton("Clear") { this.doClear() })
         actionRow.add(this.createButton("Settings") { ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java) })
@@ -142,17 +143,22 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         }
     }
 
-    /** 根据当前选中的数据源，更新库下拉框 */
+    /** 根据当前选中的数据源，更新库下拉框。DataSource 为 All 时禁用库筛选 */
     private fun updateDatabaseComboBox() {
         val selectedDs = dataSourceComboBox.selectedItem as? String
-        val selectedDb = databaseComboBox.selectedItem as? String
 
-        val filteredByDs = if (selectedDs == null || selectedDs == "All") allRecords
-        else allRecords.filter { this.extractDataSourceName(it.connectionInfo) == selectedDs }
-
-        val databases = filteredByDs.map { this.extractDatabaseName(it.tableName) }.filter { it.isNotEmpty() }.distinct()
         databaseComboBox.removeAllItems()
         databaseComboBox.addItem("All")
+
+        if (selectedDs == null || selectedDs == "All") {
+            databaseComboBox.isEnabled = false
+            return
+        }
+
+        databaseComboBox.isEnabled = true
+        val selectedDb = databaseComboBox.selectedItem as? String
+        val filteredByDs = allRecords.filter { this.extractDataSourceName(it.connectionInfo) == selectedDs }
+        val databases = filteredByDs.map { this.extractDatabaseName(it.tableName) }.filter { it.isNotEmpty() }.distinct()
         databases.forEach { databaseComboBox.addItem(it) }
         if (selectedDb != null && selectedDb in databases) databaseComboBox.selectedItem = selectedDb
     }
