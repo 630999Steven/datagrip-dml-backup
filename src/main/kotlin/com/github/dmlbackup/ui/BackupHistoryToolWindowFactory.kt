@@ -36,7 +36,10 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         override fun isCellEditable(row: Int, column: Int) = false
     }
     private val table = JTable(tableModel)
+    private var allRecords: List<BackupRecord> = emptyList()
+    /** 当前过滤后展示的记录 */
     private var records: List<BackupRecord> = emptyList()
+    private val dataSourceComboBox = JComboBox<String>()
 
     init {
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
@@ -52,6 +55,9 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
 
         // 工具栏
         val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        toolbar.add(JLabel("DataSource:"))
+        dataSourceComboBox.addActionListener { this.filterRecords() }
+        toolbar.add(dataSourceComboBox)
         toolbar.add(this.createButton("Refresh") { this.loadRecords() })
         toolbar.add(this.createButton("Rollback") { this.doRollback() })
         toolbar.add(this.createButton("Detail") { this.showDetail() })
@@ -68,21 +74,43 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
 
     private fun loadRecords() {
         try {
-            records = BackupStorage.findAll()
-            tableModel.rowCount = 0
-            for (r in records) {
-                tableModel.addRow(arrayOf(
-                    r.id,
-                    r.createdAt.format(timeFmt),
-                    r.operationType,
-                    r.tableName,
-                    r.rowCount,
-                    r.status
-                ))
-            }
+            allRecords = BackupStorage.findAll()
+
+            // 更新数据源下拉框
+            val selected = dataSourceComboBox.selectedItem as? String
+            val dataSources = allRecords.map { this.extractDataSourceName(it.connectionInfo) }.distinct()
+            dataSourceComboBox.removeAllItems()
+            dataSourceComboBox.addItem("All")
+            dataSources.forEach { dataSourceComboBox.addItem(it) }
+            if (selected != null && selected in dataSources) dataSourceComboBox.selectedItem = selected
+
+            this.filterRecords()
         } catch (e: Exception) {
             log.error("Failed to load backup records", e)
         }
+    }
+
+    private fun filterRecords() {
+        val selected = dataSourceComboBox.selectedItem as? String
+        records = if (selected == null || selected == "All") allRecords
+        else allRecords.filter { this.extractDataSourceName(it.connectionInfo) == selected }
+
+        tableModel.rowCount = 0
+        for (r in records) {
+            tableModel.addRow(arrayOf(
+                r.id,
+                r.createdAt.format(timeFmt),
+                r.operationType,
+                r.tableName,
+                r.rowCount,
+                r.status
+            ))
+        }
+    }
+
+    /** 从 connectionInfo 提取数据源名称，格式为 "name (url)" → "name" */
+    private fun extractDataSourceName(connectionInfo: String): String {
+        return connectionInfo.substringBeforeLast(" (").ifEmpty { connectionInfo }
     }
 
     private fun getSelectedRecord(): BackupRecord? {
