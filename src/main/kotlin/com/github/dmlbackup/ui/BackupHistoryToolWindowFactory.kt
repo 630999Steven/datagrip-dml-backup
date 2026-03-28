@@ -53,7 +53,9 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         override fun isCellEditable(row: Int, column: Int) = false
     }
 
-    private val table = JBTable(tableModel).apply {
+    private val table = object : JBTable(tableModel) {
+        override fun getToolTipText(e: MouseEvent): String? = null
+    }.apply {
         setSelectionMode(ListSelectionModel.SINGLE_INTERVAL_SELECTION)
         setCellSelectionEnabled(true)
         setStriped(true)
@@ -62,6 +64,9 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         rowHeight = JBUI.scale(24)
         tableHeader.reorderingAllowed = false
         emptyText.text = "No DML backup records"
+        // 关闭悬停 tooltip
+        toolTipText = null
+        tableHeader.toolTipText = null
 
         columnModel.getColumn(0).preferredWidth = JBUI.scale(35)
         columnModel.getColumn(1).preferredWidth = JBUI.scale(120)
