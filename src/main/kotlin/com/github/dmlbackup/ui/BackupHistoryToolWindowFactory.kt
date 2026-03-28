@@ -293,6 +293,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         if (row < 0 || col < 0) return
         val value = table.getValueAt(row, col)?.toString() ?: ""
         if (value.isEmpty()) return
+        val colName = if (col == 0) "ID" else columnNames[col]
 
         val textArea = JTextArea(value).apply {
             isEditable = false
@@ -300,10 +301,14 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             wrapStyleWord = true
             font = table.font
             rows = minOf(value.length / 30 + 1, 8)
-            columns = 30
+            columns = 35
+            border = JBUI.Borders.empty(4)
         }
         val popup = JBPopupFactory.getInstance()
             .createComponentPopupBuilder(javax.swing.JScrollPane(textArea), textArea)
+            .setTitle(colName)
+            .setMovable(true)
+            .setResizable(true)
             .setRequestFocus(true)
             .setCancelOnClickOutside(true)
             .setCancelOnOtherWindowOpen(true)
