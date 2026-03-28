@@ -198,18 +198,35 @@ object SqlParser {
      */
     private fun parseValuesClause(valuesRaw: String): List<List<String?>> {
         val rows = mutableListOf<List<String?>>()
-        // 按顶层括号分割每一行
+        // 按顶层括号分割每一行，跳过字符串字面量中的括号
         var depth = 0
         var start = -1
-        for (i in valuesRaw.indices) {
-            when (valuesRaw[i]) {
-                '(' -> { if (depth == 0) start = i + 1; depth++ }
-                ')' -> {
-                    depth--
-                    if (depth == 0 && start >= 0) {
-                        rows.add(this.parseSingleRow(valuesRaw.substring(start, i)))
-                        start = -1
+        var inString = false
+        var i = 0
+        while (i < valuesRaw.length) {
+            if (inString) {
+                if (valuesRaw[i] == '\'' && i + 1 < valuesRaw.length && valuesRaw[i + 1] == '\'') {
+                    i += 2
+                } else if (valuesRaw[i] == '\\' && i + 1 < valuesRaw.length) {
+                    i += 2
+                } else if (valuesRaw[i] == '\'') {
+                    inString = false; i++
+                } else {
+                    i++
+                }
+            } else {
+                when (valuesRaw[i]) {
+                    '\'' -> { inString = true; i++ }
+                    '(' -> { if (depth == 0) start = i + 1; depth++; i++ }
+                    ')' -> {
+                        depth--
+                        if (depth == 0 && start >= 0) {
+                            rows.add(this.parseSingleRow(valuesRaw.substring(start, i)))
+                            start = -1
+                        }
+                        i++
                     }
+                    else -> i++
                 }
             }
         }
@@ -242,7 +259,7 @@ object SqlParser {
                     }
                     values.add(sb.toString())
                 }
-                s.substring(i).uppercase().startsWith("NULL") -> {
+                s.regionMatches(i, "NULL", 0, 4, ignoreCase = true) -> {
                     values.add(null); i += 4
                 }
                 s[i] == ',' || s[i] == ' ' -> i++
