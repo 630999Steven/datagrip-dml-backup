@@ -157,16 +157,16 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
                 return
             }
 
-            // 从 connectionInfo 提取 URL，匹配对应的活跃连接
+            // 匹配活跃连接：优先按 URL 精确匹配，fallback 到第一个 MySQL 连接
             val targetUrl = record.connectionInfo.substringAfterLast("(").removeSuffix(")")
-            if (!targetUrl.startsWith("jdbc:mysql://") && !targetUrl.startsWith("jdbc:mariadb://")) {
-                Messages.showWarningDialog(project, "This record is not from a MySQL connection", "DML Backup")
-                return
-            }
-
-            val conn = DatabaseConnectionManager.getInstance().activeConnections
-                .firstOrNull { it.connectionPoint.dataSource?.url == targetUrl }
-                ?: throw IllegalStateException("No matching active connection found for: $targetUrl\nPlease connect to the correct database first.")
+            val allConns = DatabaseConnectionManager.getInstance().activeConnections
+            val isMySqlUrl = targetUrl.startsWith("jdbc:mysql://") || targetUrl.startsWith("jdbc:mariadb://")
+            val conn = (if (isMySqlUrl) allConns.firstOrNull { it.connectionPoint.dataSource?.url == targetUrl } else null)
+                ?: allConns.firstOrNull {
+                    val url = it.connectionPoint.dataSource?.url ?: ""
+                    url.startsWith("jdbc:mysql://") || url.startsWith("jdbc:mariadb://")
+                }
+                ?: throw IllegalStateException("No active MySQL connection found. Please connect to the database first.")
 
             val remoteConn = conn.remoteConnection
             remoteConn.setAutoCommit(false)

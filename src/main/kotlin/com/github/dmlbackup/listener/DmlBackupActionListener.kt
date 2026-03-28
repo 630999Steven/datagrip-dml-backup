@@ -108,17 +108,19 @@ class DmlBackupActionListener : AnActionListener {
                 ?: event.getData(CommonDataKeys.VIRTUAL_FILE)?.nameWithoutExtension
                 ?: "unknown"
 
-            // 连接信息：从 hookup 或 event 中获取数据源
+            // 连接信息：尽量从 hookup 或 event 获取，获取不到也继续
             val connInfo = this.resolveConnectionInfo(hookup, event)
-
-            // MySQL 检查
-            if (!connInfo.contains("mysql", ignoreCase = true) && !connInfo.contains("mariadb", ignoreCase = true)) return
+            log.info("DML Backup: grid submit on '$tableName', connInfo='$connInfo'")
 
             // 获取 DataAccessType 枚举
             val dbDataType = this.findEnumValue("com.intellij.database.run.ui.DataAccessType", "DATABASE_DATA")
             val mutDataType = this.findEnumValue("com.intellij.database.run.ui.DataAccessType", "DATA_WITH_MUTATIONS")
-            val dbModel = this.invokeWith(grid, "getDataModel", dbDataType) ?: return
-            val mutModel = this.invokeWith(grid, "getDataModel", mutDataType) ?: return
+            val dbModel = this.invokeWith(grid, "getDataModel", dbDataType)
+            val mutModel = this.invokeWith(grid, "getDataModel", mutDataType)
+            if (dbModel == null || mutModel == null) {
+                log.warn("DML Backup: grid getDataModel failed, dbModel=$dbModel, mutModel=$mutModel")
+                return
+            }
 
             // 列信息
             val columnIndices = this.invoke(dbModel, "getColumnIndices") ?: return
