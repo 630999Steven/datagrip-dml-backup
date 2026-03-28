@@ -172,6 +172,11 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
             remoteConn.setAutoCommit(false)
             try {
                 val stmt = remoteConn.createStatement()
+                // 从 connectionInfo URL 中提取 database 名，切到正确的库
+                val dbName = targetUrl.substringAfterLast("/").substringBefore("?").substringBefore(";")
+                if (dbName.isNotEmpty()) {
+                    stmt.execute("USE `$dbName`")
+                }
                 for (sql in sqls) {
                     log.info("Executing rollback SQL: $sql")
                     stmt.executeUpdate(sql)
