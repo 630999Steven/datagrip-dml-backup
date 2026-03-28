@@ -69,20 +69,24 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
 
         add(JBScrollPane(table), BorderLayout.CENTER)
 
-        // 工具栏：筛选行 + 操作行
-        val filterRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
-        filterRow.add(JLabel("DataSource:"))
+        // 工具栏：筛选行 + 操作行，使用 GridBagLayout 防止组件被挤出
         dataSourceComboBox.addActionListener { this.updateDatabaseComboBox(); this.filterRecords() }
-        filterRow.add(dataSourceComboBox)
-        filterRow.add(JLabel("Database:"))
         databaseComboBox.addActionListener { this.filterRecords() }
-        filterRow.add(databaseComboBox)
 
-        val actionRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
-        actionRow.add(this.createButton("Rollback") { this.doRollback() })
-        actionRow.add(this.createButton("Refresh") { this.loadRecords() })
-        actionRow.add(this.createButton("Clear") { this.doClear() })
-        actionRow.add(this.createButton("Settings") { ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java) })
+        val filterRow = JPanel(java.awt.GridBagLayout())
+        val fc = java.awt.GridBagConstraints().apply { fill = java.awt.GridBagConstraints.HORIZONTAL; insets = java.awt.Insets(1, 2, 1, 2) }
+        fc.weightx = 0.0; filterRow.add(JLabel("DataSource:"), fc)
+        fc.weightx = 1.0; filterRow.add(dataSourceComboBox, fc)
+        fc.weightx = 0.0; filterRow.add(JLabel("Database:"), fc)
+        fc.weightx = 1.0; filterRow.add(databaseComboBox, fc)
+
+        val actionRow = JPanel(java.awt.GridBagLayout())
+        val ac = java.awt.GridBagConstraints().apply { insets = java.awt.Insets(1, 2, 1, 2) }
+        actionRow.add(this.createButton("Rollback") { this.doRollback() }, ac)
+        actionRow.add(this.createButton("Refresh") { this.loadRecords() }, ac)
+        actionRow.add(this.createButton("Clear") { this.doClear() }, ac)
+        actionRow.add(this.createButton("Settings") { ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java) }, ac)
+        ac.weightx = 1.0; ac.fill = java.awt.GridBagConstraints.HORIZONTAL; actionRow.add(JPanel(), ac) // 右侧填充
 
         val toolbar = JPanel()
         toolbar.layout = BoxLayout(toolbar, BoxLayout.Y_AXIS)
