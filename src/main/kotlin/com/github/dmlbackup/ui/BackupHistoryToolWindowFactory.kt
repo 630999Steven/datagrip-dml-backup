@@ -64,9 +64,8 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         rowHeight = JBUI.scale(24)
         tableHeader.reorderingAllowed = false
         emptyText.text = "No DML backup records"
-        // 关闭悬停 tooltip
-        toolTipText = null
-        tableHeader.toolTipText = null
+        // 禁用悬停展开预览
+        putClientProperty("JBTable.disableExpandableHandler", true)
 
         columnModel.getColumn(0).preferredWidth = JBUI.scale(35)
         columnModel.getColumn(1).preferredWidth = JBUI.scale(120)
