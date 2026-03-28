@@ -101,7 +101,9 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         table.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
-            override fun mouseClicked(e: MouseEvent) {}
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.clickCount == 2) this@BackupHistoryPanel.showCellPopup(e)
+            }
         })
 
         this.loadRecords()
@@ -260,6 +262,35 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         menu.add(deleteItem)
 
         menu.show(table, e.x, e.y)
+    }
+
+    /** 双击弹出浮层显示完整单元格值 */
+    private fun showCellPopup(e: MouseEvent) {
+        val row = table.rowAtPoint(e.point)
+        val col = table.columnAtPoint(e.point)
+        if (row < 0 || col < 0) return
+        val value = table.getValueAt(row, col)?.toString() ?: ""
+        if (value.isEmpty()) return
+
+        val textArea = JTextArea(value).apply {
+            isEditable = false
+            lineWrap = true
+            wrapStyleWord = true
+            font = table.font
+            rows = minOf(value.length / 30 + 1, 8)
+            columns = 30
+        }
+        val popup = JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(javax.swing.JScrollPane(textArea), textArea)
+            .setRequestFocus(true)
+            .setCancelOnClickOutside(true)
+            .setCancelOnOtherWindowOpen(true)
+            .createPopup()
+
+        val cellRect = table.getCellRect(row, col, true)
+        val point = java.awt.Point(cellRect.x, cellRect.y + cellRect.height)
+        SwingUtilities.convertPointToScreen(point, table)
+        popup.showInScreenCoordinates(table, point)
     }
 
     // ==================== Operations ====================
