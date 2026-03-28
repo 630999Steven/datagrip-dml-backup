@@ -63,9 +63,8 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         tableHeader.reorderingAllowed = false
         emptyText.text = "No DML backup records"
 
-        // ID 列：窄宽度 + 暗色字体
-        columnModel.getColumn(0).preferredWidth = JBUI.scale(20)
-        columnModel.getColumn(0).maxWidth = JBUI.scale(40)
+        // ID 列：暗色字体，宽度在 filterRecords 中动态调整
+        columnModel.getColumn(0).preferredWidth = JBUI.scale(25)
         columnModel.getColumn(0).cellRenderer = javax.swing.table.DefaultTableCellRenderer().apply {
             foreground = java.awt.Color.GRAY
             horizontalAlignment = javax.swing.SwingConstants.CENTER
@@ -238,6 +237,13 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
                 r.status
             ))
         }
+
+        // ID 列宽度动态适配最大 ID 位数
+        val maxId = records.maxOfOrNull { it.id } ?: 0
+        val idDigits = maxId.toString().length
+        val idWidth = JBUI.scale((idDigits * 8) + 16) // 每位约8px + 左右 padding
+        table.columnModel.getColumn(0).preferredWidth = idWidth
+        table.columnModel.getColumn(0).maxWidth = idWidth
     }
 
     // ==================== Helpers ====================
