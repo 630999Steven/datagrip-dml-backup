@@ -21,6 +21,7 @@ import java.time.ZonedDateTime
 object BackupService {
 
     private val log = Logger.getInstance(BackupService::class.java)
+    private val gson = Gson()
 
     private val SYSTEM_SCHEMAS = setOf(
         "information_schema", "mysql", "performance_schema", "sys"
@@ -55,7 +56,6 @@ object BackupService {
         }
         val rows = parsed.insertValues ?: return
 
-        val gson = Gson()
         val jsonArray = JsonArray()
         for (values in rows) {
             val obj = JsonObject()
@@ -126,7 +126,7 @@ object BackupService {
 
                 // 检测主键
                 val primaryKeys = this.detectPrimaryKeys(remoteConn, parsed.tableName)
-                val pkJson = if (primaryKeys.isNotEmpty()) Gson().toJson(primaryKeys) else null
+                val pkJson = if (primaryKeys.isNotEmpty()) gson.toJson(primaryKeys) else null
 
                 // SELECT FOR UPDATE 事务包裹
                 remoteConn.setAutoCommit(false)
@@ -171,7 +171,7 @@ object BackupService {
 
     private fun countRows(remoteConn: RemoteConnection, parsed: ParsedDml): Int {
         val countSql = parsed.backupSql.replaceFirst(
-            Regex("SELECT\\s+.*?\\s+FROM", RegexOption.IGNORE_CASE), "SELECT COUNT(*) FROM"
+            Regex("SELECT\\s+.*?\\s+FROM", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), "SELECT COUNT(*) FROM"
         )
         val stmt = remoteConn.createStatement()
         try {
@@ -209,13 +209,12 @@ object BackupService {
         if (urlMatch != null) return urlMatch.groupValues[1]
 
         log.info("DML Backup: querying INFORMATION_SCHEMA for table: $tableName")
-        val stmt = remoteConn.createStatement()
+        val ps = remoteConn.prepareStatement(
+            "SELECT TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ? ORDER BY TABLE_SCHEMA"
+        )
         try {
-            val escapedTable = tableName.replace("'", "''")
-            val rs = stmt.executeQuery(
-                "SELECT TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLES " +
-                "WHERE TABLE_NAME = '$escapedTable' ORDER BY TABLE_SCHEMA"
-            )
+            ps.setString(1, tableName)
+            val rs = ps.executeQuery()
             val schemas = mutableListOf<String>()
             while (rs.next()) { schemas.add(rs.getString(1)) }
             rs.close()
@@ -227,7 +226,7 @@ object BackupService {
             log.info("DML Backup: resolved schema from INFORMATION_SCHEMA: $result")
             return result
         } finally {
-            stmt.close()
+            ps.close()
         }
     }
 
@@ -236,7 +235,6 @@ object BackupService {
         val columnCount = meta.columnCount
         val columnNames = (1..columnCount).map { meta.getColumnName(it) }
 
-        val gson = Gson()
         val jsonArray = JsonArray()
         while (rs.next()) {
             val obj = JsonObject()
