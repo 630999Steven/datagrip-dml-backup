@@ -4,9 +4,6 @@ import com.github.dmlbackup.model.BackupRecord
 import com.github.dmlbackup.settings.DmlBackupSettings
 import com.github.dmlbackup.storage.BackupStorage
 import com.google.gson.Gson
-import com.google.gson.JsonArray
-import com.google.gson.JsonNull
-import com.google.gson.JsonObject
 import com.intellij.database.console.JdbcConsole
 import com.intellij.database.dataSource.DatabaseConnectionManager
 import com.intellij.database.remote.jdbc.RemoteConnection
@@ -59,15 +56,10 @@ object BackupService {
         }
         val rows = parsed.insertValues ?: return
 
-        val jsonArray = JsonArray()
-        for (values in rows) {
-            val obj = JsonObject()
-            columns.forEachIndexed { idx, name ->
-                val value = values.getOrNull(idx)
-                if (value == null) obj.add(name, JsonNull.INSTANCE)
-                else obj.addProperty(name, value)
+        val rowMaps = rows.map { values ->
+            linkedMapOf<String, String?>().also { map ->
+                columns.forEachIndexed { idx, name -> map[name] = values.getOrNull(idx) }
             }
-            jsonArray.add(obj)
         }
 
         val record = BackupRecord(
@@ -76,7 +68,7 @@ object BackupService {
             tableName = fullTableName,
             originalSql = originalSql,
             connectionInfo = connInfo,
-            backupDataJson = gson.toJson(jsonArray),
+            backupDataJson = nullSafeGson.toJson(rowMaps),
             rowCount = rows.size,
             partialColumns = true
         )
@@ -235,21 +227,24 @@ object BackupService {
         }
     }
 
+    private val nullSafeGson = com.google.gson.GsonBuilder().serializeNulls().create()
+
     private fun resultSetToJson(rs: RemoteResultSet): Pair<String, Int> {
         val meta = rs.metaData
         val columnCount = meta.columnCount
         val columnNames = (1..columnCount).map { meta.getColumnName(it) }
 
-        val jsonArray = JsonArray()
+        val rows = mutableListOf<Map<String, String?>>()
         while (rs.next()) {
-            val obj = JsonObject()
+            val row = linkedMapOf<String, String?>()
             for (i in 1..columnCount) {
                 val value = rs.getObject(i)
-                if (value == null) obj.add(columnNames[i - 1], JsonNull.INSTANCE)
-                else obj.addProperty(columnNames[i - 1], value.toString())
+                row[columnNames[i - 1]] = value?.toString()
             }
-            jsonArray.add(obj)
+            rows.add(row)
         }
-        return Pair(gson.toJson(jsonArray), jsonArray.size())
+        val result = nullSafeGson.toJson(rows)
+        log.info("DML Backup: resultSetToJson columns=$columnNames, json=$result")
+        return Pair(result, rows.size)
     }
 }

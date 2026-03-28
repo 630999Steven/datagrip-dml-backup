@@ -7,9 +7,6 @@ import com.github.dmlbackup.service.SqlParser
 import com.github.dmlbackup.settings.DmlBackupSettings
 import com.github.dmlbackup.storage.BackupStorage
 import com.google.gson.Gson
-import com.google.gson.JsonArray
-import com.google.gson.JsonNull
-import com.google.gson.JsonObject
 import com.intellij.database.console.JdbcConsole
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -183,33 +180,27 @@ class DmlBackupActionListener : AnActionListener {
             colIdx ?: continue
             val value = this.invokeWith(model, "getValueAt", rowIdx, colIdx)
             val strValue = value?.toString()
+            log.info("DML Backup GRID readRow: col=${columnNames[i]}, value=$value, class=${value?.javaClass?.name}, str=$strValue")
             // 跳过 Grid 占位值（自增/生成列）
             if (strValue != null && strValue.uppercase() in GRID_PLACEHOLDER_VALUES) continue
             // null 值和字符串 "null" 都当 null 处理
             row[columnNames[i]] = if (strValue == null || strValue.equals("null", ignoreCase = true)) null else strValue
         }
+        log.info("DML Backup GRID readRow result: $row")
         return row
     }
 
+    private val nullSafeGson = com.google.gson.GsonBuilder().serializeNulls().create()
+
     private fun saveGridBackup(operationType: String, tableName: String, connInfo: String,
                                rows: List<Map<String, String?>>, originalSql: String) {
-        val jsonArray = JsonArray()
-        for (row in rows) {
-            val obj = JsonObject()
-            for ((key, value) in row) {
-                if (value == null) obj.add(key, JsonNull.INSTANCE)
-                else obj.addProperty(key, value)
-            }
-            jsonArray.add(obj)
-        }
-
         val record = BackupRecord(
             createdAt = ZonedDateTime.now(),
             operationType = operationType,
             tableName = tableName,
             originalSql = originalSql,
             connectionInfo = connInfo,
-            backupDataJson = gson.toJson(jsonArray),
+            backupDataJson = nullSafeGson.toJson(rows),
             rowCount = rows.size,
             partialColumns = false  // 可视化编辑器提交全部列，不存在部分列问题
         )
