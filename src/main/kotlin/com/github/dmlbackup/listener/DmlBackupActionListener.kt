@@ -199,7 +199,7 @@ class DmlBackupActionListener : AnActionListener {
             connectionInfo = connInfo,
             backupDataJson = gson.toJson(jsonArray),
             rowCount = rows.size,
-            partialColumns = operationType == "INSERT"
+            partialColumns = false  // 可视化编辑器提交全部列，不存在部分列问题
         )
 
         val id = BackupStorage.save(record)
