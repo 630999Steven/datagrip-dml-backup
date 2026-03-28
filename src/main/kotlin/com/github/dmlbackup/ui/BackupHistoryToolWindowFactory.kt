@@ -63,7 +63,13 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         tableHeader.reorderingAllowed = false
         emptyText.text = "No DML backup records"
 
-        columnModel.getColumn(0).preferredWidth = JBUI.scale(35)
+        // ID 列：窄宽度 + 暗色字体
+        columnModel.getColumn(0).preferredWidth = JBUI.scale(20)
+        columnModel.getColumn(0).maxWidth = JBUI.scale(40)
+        columnModel.getColumn(0).cellRenderer = javax.swing.table.DefaultTableCellRenderer().apply {
+            foreground = java.awt.Color.GRAY
+            horizontalAlignment = javax.swing.SwingConstants.CENTER
+        }
         columnModel.getColumn(1).preferredWidth = JBUI.scale(120)
         columnModel.getColumn(2).preferredWidth = JBUI.scale(50)
         columnModel.getColumn(3).preferredWidth = JBUI.scale(90)
@@ -258,6 +264,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         val row = table.rowAtPoint(e.point)
         if (row < 0) return
         table.setRowSelectionInterval(row, row)
+        table.setColumnSelectionInterval(0, table.columnCount - 1)
         val record = records[row]
 
         val menu = JPopupMenu()
