@@ -109,6 +109,26 @@ object BackupStorage {
     }
 
     @Synchronized
+    fun deleteById(id: Long) {
+        this.getConnection().use { conn ->
+            val ps = conn.prepareStatement("DELETE FROM backup_record WHERE id = ?")
+            ps.setLong(1, id)
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun deleteByIds(ids: List<Long>) {
+        if (ids.isEmpty()) return
+        this.getConnection().use { conn ->
+            val placeholders = ids.joinToString(",") { "?" }
+            val ps = conn.prepareStatement("DELETE FROM backup_record WHERE id IN ($placeholders)")
+            ids.forEachIndexed { idx, id -> ps.setLong(idx + 1, id) }
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
     fun updateStatus(id: Long, status: String) {
         this.getConnection().use { conn ->
             val ps = conn.prepareStatement("UPDATE backup_record SET status = ? WHERE id = ?")
