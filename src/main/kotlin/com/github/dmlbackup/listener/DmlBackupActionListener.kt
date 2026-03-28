@@ -102,11 +102,14 @@ class DmlBackupActionListener : AnActionListener {
             val hasPending = this.invoke(mutator, "hasPendingChanges") as? Boolean ?: return
             if (!hasPending) return
 
-            // 表名：GridHelper → VirtualFile 文件名
+            // 表名和 schema
             val gridHelper = this.invoke(grid, "getGridHelper")
-            val tableName = this.invokeWith(gridHelper, "getTableName", grid)?.toString()
+            val rawTableName = this.invokeWith(gridHelper, "getTableName", grid)?.toString()
                 ?: event.getData(CommonDataKeys.VIRTUAL_FILE)?.nameWithoutExtension
                 ?: "unknown"
+            // 从 getDatabaseTable 获取 schema（DasObject.getDasParent → schema name）
+            val schema = this.resolveGridSchema(grid)
+            val tableName = if (schema != null && !rawTableName.contains(".")) "$schema.$rawTableName" else rawTableName
 
             // MySQL 检查：通过 DataGridUtil.getDbms(grid) 判断
             if (!this.isGridMySql(grid)) return
@@ -206,6 +209,22 @@ class DmlBackupActionListener : AnActionListener {
         val id = BackupStorage.save(record)
         log.info("DML Backup: saved grid $operationType backup id=$id for $tableName")
         BackupStorage.trimRecords(DmlBackupSettings.getInstance().maxRecords)
+    }
+
+    /**
+     * 通过 DataGridUtilCore.getDatabaseTable(grid) 获取 schema/database 名
+     */
+    private fun resolveGridSchema(grid: Any): String? {
+        try {
+            val utilCoreClass = Class.forName("com.intellij.database.datagrid.DataGridUtilCore")
+            val getTable = utilCoreClass.methods.find { it.name == "getDatabaseTable" && it.parameterCount == 1 }
+            val dasObject = getTable?.invoke(null, grid) ?: return null
+            // DasObject.getDasParent() 返回 schema/database
+            val parent = this.invoke(dasObject, "getDasParent") ?: return null
+            return this.invoke(parent, "getName")?.toString()
+        } catch (_: Exception) {
+            return null
+        }
     }
 
     /**

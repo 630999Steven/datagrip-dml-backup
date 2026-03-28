@@ -37,7 +37,7 @@ object RollbackService {
         return rows.map { row ->
             val columns = row.keys.joinToString(", ") { "`$it`" }
             val values = row.values.joinToString(", ") { this.escapeValue(it) }
-            "INSERT INTO `$tableName` ($columns) VALUES ($values)"
+            "INSERT INTO ${this.quoteTableName(tableName)} ($columns) VALUES ($values)"
         }
     }
 
@@ -57,7 +57,7 @@ object RollbackService {
                 val pkEntry = row.entries.find { it.key.equals("id", ignoreCase = true) } ?: row.entries.first()
                 "`${pkEntry.key}` = ${this.escapeValue(pkEntry.value)}"
             }
-            "UPDATE `$tableName` SET $setClauses WHERE $whereClause LIMIT 1"
+            "UPDATE ${this.quoteTableName(tableName)} SET $setClauses WHERE $whereClause LIMIT 1"
         }
     }
 
@@ -67,8 +67,13 @@ object RollbackService {
                 if (it.value == null) "`${it.key}` IS NULL"
                 else "`${it.key}` = ${this.escapeValue(it.value)}"
             }
-            "DELETE FROM `$tableName` WHERE $whereClauses LIMIT 1"
+            "DELETE FROM ${this.quoteTableName(tableName)} WHERE $whereClauses LIMIT 1"
         }
+    }
+
+    /** 将 tableName（可能是 schema.table 格式）包裹反引号 */
+    private fun quoteTableName(tableName: String): String {
+        return tableName.split(".").joinToString(".") { "`$it`" }
     }
 
     private fun escapeValue(value: String?): String {

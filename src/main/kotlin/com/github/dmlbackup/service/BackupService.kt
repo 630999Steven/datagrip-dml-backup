@@ -37,9 +37,12 @@ object BackupService {
      */
     fun backup(console: JdbcConsole, parsed: ParsedDml, originalSql: String) {
         val connInfo = "${console.dataSource?.name ?: "unknown"} (${console.dataSource?.url ?: "unknown"})"
+        // 从 URL 中提取 schema，用于 INSERT 的 tableName 前缀
+        val urlSchema = console.dataSource?.url?.let { Regex("://[^/]+/([^?;&]+)").find(it)?.groupValues?.get(1) }
 
         if (parsed.type == DmlType.INSERT) {
-            this.backupInsert(parsed, originalSql, connInfo)
+            val fullTableName = if (urlSchema != null) "$urlSchema.${parsed.tableName}" else parsed.tableName
+            this.backupInsert(parsed, originalSql, connInfo, fullTableName)
             return
         }
 
@@ -49,7 +52,7 @@ object BackupService {
     /**
      * INSERT 备份：直接从 SQL 中解析列名和值，不需要查询数据库
      */
-    private fun backupInsert(parsed: ParsedDml, originalSql: String, connInfo: String) {
+    private fun backupInsert(parsed: ParsedDml, originalSql: String, connInfo: String, fullTableName: String) {
         val columns = parsed.insertColumns ?: run {
             log.warn("DML Backup: INSERT without column list, cannot backup")
             return
@@ -70,7 +73,7 @@ object BackupService {
         val record = BackupRecord(
             createdAt = ZonedDateTime.now(),
             operationType = parsed.type.name,
-            tableName = parsed.tableName,
+            tableName = fullTableName,
             originalSql = originalSql,
             connectionInfo = connInfo,
             backupDataJson = gson.toJson(jsonArray),
@@ -139,10 +142,12 @@ object BackupService {
                         val (json, rowCount) = this.resultSetToJson(rs)
                         rs.close()
 
+                        // tableName 带上 schema 前缀，确保回滚时能定位到正确的库
+                        val fullTableName = if (schema != null) "$schema.${parsed.tableName}" else parsed.tableName
                         val record = BackupRecord(
                             createdAt = ZonedDateTime.now(),
                             operationType = parsed.type.name,
-                            tableName = parsed.tableName,
+                            tableName = fullTableName,
                             originalSql = originalSql,
                             connectionInfo = connInfo,
                             backupDataJson = json,
