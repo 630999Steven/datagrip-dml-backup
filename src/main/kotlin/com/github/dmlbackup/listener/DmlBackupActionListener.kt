@@ -174,7 +174,8 @@ class DmlBackupActionListener : AnActionListener {
             val strValue = value?.toString()
             // 跳过 Grid 占位值（自增/生成列）
             if (strValue != null && strValue.uppercase() in GRID_PLACEHOLDER_VALUES) continue
-            row[columnNames[i]] = strValue
+            // null 值和字符串 "null" 都当 null 处理
+            row[columnNames[i]] = if (strValue == null || strValue.equals("null", ignoreCase = true)) null else strValue
         }
         return row
     }
