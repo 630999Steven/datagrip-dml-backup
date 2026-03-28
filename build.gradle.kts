@@ -41,6 +41,12 @@ intellijPlatform {
     }
 }
 
+tasks {
+    runIde {
+        jvmArgs("-Dsun.java2d.metal=false", "-Dsun.java2d.opengl=false")
+    }
+}
+
 kotlin {
     jvmToolchain(21)
 }
