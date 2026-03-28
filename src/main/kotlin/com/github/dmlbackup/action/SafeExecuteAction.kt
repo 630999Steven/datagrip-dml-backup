@@ -24,20 +24,21 @@ class SafeExecuteAction : AnAction() {
         val sql = this.getExecutableSql(editor)
         if (sql.isNullOrBlank()) return this.delegateOriginal(e)
 
-        val parsed = SqlParser.parse(sql)
-        if (parsed == null || parsed.type == DmlType.OTHER) return this.delegateOriginal(e)
+        val console = JdbcConsole.findConsole(e)
+        if (console == null || !BackupService.isMySql(console)) return this.delegateOriginal(e)
 
-        // 静默备份
-        try {
-            val console = JdbcConsole.findConsole(e)
-            if (console != null && BackupService.isMySql(console)) {
-                BackupService.backup(console, parsed, sql)
+        val cleaned = SqlParser.removeComments(sql)
+        val statements = SqlParser.splitStatements(cleaned)
+
+        for (stmt in statements) {
+            val parsed = SqlParser.parse(stmt) ?: continue
+            if (parsed.type == DmlType.OTHER) continue
+            try {
+                BackupService.backup(console, parsed, stmt)
                 log.info("DML backup completed for: ${parsed.tableName}")
-            } else {
-                log.warn("Cannot find JdbcConsole or not MySQL, skip backup")
+            } catch (ex: Exception) {
+                log.error("Backup failed, continue executing original SQL", ex)
             }
-        } catch (ex: Exception) {
-            log.error("Backup failed, continue executing original SQL", ex)
         }
 
         this.delegateOriginal(e)

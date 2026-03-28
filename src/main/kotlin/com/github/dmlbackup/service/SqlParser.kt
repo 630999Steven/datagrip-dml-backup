@@ -130,7 +130,7 @@ object SqlParser {
      * 解析 SQL，如果是 DELETE/UPDATE/INSERT 则返回 ParsedDml，否则返回 null
      */
     fun parse(sql: String): ParsedDml? {
-        val cleaned = this.removeComments(sql.trim()).removeSuffix(";").trim()
+        val cleaned = sql.trim().removeSuffix(";").trim()
 
         this.parseDelete(cleaned)?.let { return it }
         this.parseUpdate(cleaned)?.let { return it }
