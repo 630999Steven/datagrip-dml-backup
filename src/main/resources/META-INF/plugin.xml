@@ -1,0 +1,26 @@
+<idea-plugin>
+    <id>com.github.dmlbackup</id>
+    <name>DML Backup</name>
+    <vendor>dml-backup</vendor>
+    <description><![CDATA[
+        Automatically backup data before executing DELETE/UPDATE statements in DataGrip.
+        Provides one-click rollback from the backup history panel.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.database</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="com.github.dmlbackup.DmlBackupStartupActivity"/>
+        <applicationConfigurable parentId="tools"
+                                 instance="com.github.dmlbackup.settings.DmlBackupConfigurable"
+                                 id="com.github.dmlbackup.settings"
+                                 displayName="DML Backup"/>
+        <applicationService serviceImplementation="com.github.dmlbackup.settings.DmlBackupSettings"/>
+        <toolWindow id="DML Backup"
+                    anchor="right"
+                    factoryClass="com.github.dmlbackup.ui.BackupHistoryToolWindowFactory"
+                    icon="AllIcons.Vcs.History"/>
+        <notificationGroup id="DML Backup" displayType="BALLOON"/>
+    </extensions>
+</idea-plugin>
