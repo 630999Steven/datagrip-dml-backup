@@ -128,14 +128,10 @@ class DmlBackupActionListener : AnActionListener {
                 return
             }
 
-            // 列信息：从 mutModel 获取完整列列表（dbModel 可能只有部分列）
-            val columnIndices = this.invoke(mutModel, "getColumnIndices") ?: return
-            val colIterable = this.invoke(columnIndices, "asIterable") as? Iterable<*> ?: return
-            val colList = colIterable.toList()
-            val columnNames = colList.map { colIdx ->
-                val col = this.invokeWith(mutModel, "getColumn", colIdx)
-                this.invoke(col, "getName")?.toString() ?: "unknown"
-            }
+            // 每个 model 各自的列信息（列索引不可跨 model 使用）
+            val dbColInfo = this.getColumnInfo(dbModel)
+            val mutColInfo = this.getColumnInfo(mutModel)
+            if (dbColInfo == null && mutColInfo == null) return
 
             // 按 mutation type 分组
             val affectedRows = this.invoke(mutator, "getAffectedRows") ?: return
@@ -149,9 +145,9 @@ class DmlBackupActionListener : AnActionListener {
                 rowIdx ?: continue
                 val mutType = this.invokeWith(mutator, "getMutationType", rowIdx) ?: continue
                 when (mutType.toString()) {
-                    "DELETE" -> deleteRows.add(this.readRowData(dbModel, rowIdx, colList, columnNames))
-                    "MODIFY" -> updateRows.add(this.readRowData(dbModel, rowIdx, colList, columnNames))
-                    "INSERT" -> insertRows.add(this.readRowData(mutModel, rowIdx, colList, columnNames))
+                    "DELETE" -> if (dbColInfo != null) deleteRows.add(this.readRowData(dbModel, rowIdx, dbColInfo.first, dbColInfo.second))
+                    "MODIFY" -> if (dbColInfo != null) updateRows.add(this.readRowData(dbModel, rowIdx, dbColInfo.first, dbColInfo.second))
+                    "INSERT" -> if (mutColInfo != null) insertRows.add(this.readRowData(mutModel, rowIdx, mutColInfo.first, mutColInfo.second))
                 }
             }
 
@@ -164,6 +160,18 @@ class DmlBackupActionListener : AnActionListener {
         } catch (e: Exception) {
             log.error("DML Backup: grid backup failed", e)
         }
+    }
+
+    /** 获取 model 的列索引和列名列表 */
+    private fun getColumnInfo(model: Any): Pair<List<Any?>, List<String>>? {
+        val indices = this.invoke(model, "getColumnIndices") ?: return null
+        val iterable = this.invoke(indices, "asIterable") as? Iterable<*> ?: return null
+        val colList = iterable.toList()
+        val names = colList.map { colIdx ->
+            val col = this.invokeWith(model, "getColumn", colIdx)
+            this.invoke(col, "getName")?.toString() ?: "unknown"
+        }
+        return Pair(colList, names)
     }
 
     /** Grid 中自增/生成列的占位值 */
