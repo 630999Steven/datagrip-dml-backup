@@ -3,9 +3,18 @@
     <name>DML Backup</name>
     <vendor>dml-backup</vendor>
     <description><![CDATA[
-        Automatically backup data before executing DELETE/UPDATE statements in DataGrip.
-        Provides one-click rollback from the backup history panel.
-    ]]></description>
+    Automatically backup data before executing DELETE/UPDATE/INSERT statements in DataGrip (MySQL only).
+    Provides one-click rollback from the backup history panel.
+    <br/><br/>
+    Features:
+    <ul>
+        <li>Automatic backup with SELECT FOR UPDATE consistency</li>
+        <li>Support for JOIN-based DELETE/UPDATE statements</li>
+        <li>Multi-statement SQL support</li>
+        <li>Large table protection with configurable row limit</li>
+        <li>Transaction-wrapped rollback with real primary key detection</li>
+    </ul>
+]]></description>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.database</depends>
