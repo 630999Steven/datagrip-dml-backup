@@ -114,7 +114,7 @@ object BackupService {
                                 "DML Backup skipped: affected rows ($count) exceed limit ($maxRows)",
                                 NotificationType.WARNING
                             )
-                            .notify(null)
+                            .notify(console.project)
                         return@runProcess
                     }
                 }
