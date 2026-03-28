@@ -89,10 +89,13 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         toolbar.add(actionRow)
         add(toolbar, BorderLayout.NORTH)
 
-        // 右键菜单
+        // 右键菜单 + 双击查看单元格值
         table.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.clickCount == 2) this@BackupHistoryPanel.showCellValue(e)
+            }
         })
 
         this.loadRecords()
@@ -188,6 +191,24 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
                 r.status
             ))
         }
+    }
+
+    /** 双击单元格弹窗显示完整值 */
+    private fun showCellValue(e: MouseEvent) {
+        val row = table.rowAtPoint(e.point)
+        val col = table.columnAtPoint(e.point)
+        if (row < 0 || col < 0) return
+        val value = table.getValueAt(row, col)?.toString() ?: ""
+        val colName = columnNames[col]
+
+        val textArea = JTextArea(value)
+        textArea.isEditable = false
+        textArea.lineWrap = true
+        textArea.wrapStyleWord = true
+
+        val scrollPane = JScrollPane(textArea)
+        scrollPane.preferredSize = java.awt.Dimension(400, 150)
+        JOptionPane.showMessageDialog(this, scrollPane, colName, JOptionPane.PLAIN_MESSAGE)
     }
 
     private fun extractTableName(tableName: String): String = tableName.substringAfterLast(".")
