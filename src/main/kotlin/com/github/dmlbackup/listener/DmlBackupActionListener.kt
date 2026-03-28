@@ -128,12 +128,12 @@ class DmlBackupActionListener : AnActionListener {
                 return
             }
 
-            // 列信息
-            val columnIndices = this.invoke(dbModel, "getColumnIndices") ?: return
+            // 列信息：从 mutModel 获取完整列列表（dbModel 可能只有部分列）
+            val columnIndices = this.invoke(mutModel, "getColumnIndices") ?: return
             val colIterable = this.invoke(columnIndices, "asIterable") as? Iterable<*> ?: return
             val colList = colIterable.toList()
             val columnNames = colList.map { colIdx ->
-                val col = this.invokeWith(dbModel, "getColumn", colIdx)
+                val col = this.invokeWith(mutModel, "getColumn", colIdx)
                 this.invoke(col, "getName")?.toString() ?: "unknown"
             }
 
