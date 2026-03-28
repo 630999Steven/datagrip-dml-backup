@@ -3,23 +3,27 @@ package com.github.dmlbackup.ui
 import com.github.dmlbackup.model.BackupRecord
 import com.github.dmlbackup.service.RollbackService
 import com.github.dmlbackup.settings.DmlBackupConfigurable
-import com.github.dmlbackup.settings.DmlBackupSettings
 import com.github.dmlbackup.storage.BackupStorage
 import com.intellij.database.dataSource.DatabaseConnectionManager
+import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.options.ShowSettingsUtil
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
+import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
-import java.awt.BorderLayout
-import java.awt.FlowLayout
+import com.intellij.ui.table.JBTable
+import com.intellij.util.ui.JBUI
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import javax.swing.SwingUtilities
 import java.time.format.DateTimeFormatter
 import javax.swing.*
 import javax.swing.table.DefaultTableModel
@@ -40,7 +44,7 @@ class BackupHistoryToolWindowFactory : ToolWindowFactory {
     }
 }
 
-class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) {
+class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(true, false) {
 
     private val log = Logger.getInstance(BackupHistoryPanel::class.java)
     private val timeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -49,49 +53,49 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
     private val tableModel = object : DefaultTableModel(columnNames, 0) {
         override fun isCellEditable(row: Int, column: Int) = false
     }
-    private val table = JTable(tableModel)
+
+    private val table = JBTable(tableModel).apply {
+        setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        setStriped(true)
+        rowHeight = JBUI.scale(24)
+        tableHeader.reorderingAllowed = false
+        emptyText.text = "No DML backup records"
+
+        columnModel.getColumn(0).preferredWidth = JBUI.scale(35)
+        columnModel.getColumn(1).preferredWidth = JBUI.scale(120)
+        columnModel.getColumn(2).preferredWidth = JBUI.scale(50)
+        columnModel.getColumn(3).preferredWidth = JBUI.scale(90)
+        columnModel.getColumn(4).preferredWidth = JBUI.scale(90)
+        columnModel.getColumn(5).preferredWidth = JBUI.scale(80)
+        columnModel.getColumn(6).preferredWidth = JBUI.scale(35)
+        columnModel.getColumn(7).preferredWidth = JBUI.scale(70)
+    }
+
     private var allRecords: List<BackupRecord> = emptyList()
     private var records: List<BackupRecord> = emptyList()
-    private val dataSourceComboBox = JComboBox<String>()
-    private val databaseComboBox = JComboBox<String>()
+    private var selectedDataSource: String = "All"
+    private var selectedDatabase: String = "All"
 
     init {
-        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        // ActionToolbar
+        val actionGroup = DefaultActionGroup().apply {
+            add(RollbackAction())
+            add(RefreshAction())
+            addSeparator()
+            add(DataSourceFilterAction())
+            add(DatabaseFilterAction())
+            addSeparator()
+            add(ClearAction())
+            add(SettingsAction())
+        }
+        val toolbar = ActionManager.getInstance().createActionToolbar("DmlBackupToolbar", actionGroup, true)
+        toolbar.targetComponent = this
+        setToolbar(toolbar.component)
 
-        table.columnModel.getColumn(0).preferredWidth = 35   // ID
-        table.columnModel.getColumn(1).preferredWidth = 120  // Time
-        table.columnModel.getColumn(2).preferredWidth = 50   // Type
-        table.columnModel.getColumn(3).preferredWidth = 90   // Table
-        table.columnModel.getColumn(4).preferredWidth = 90   // Database
-        table.columnModel.getColumn(5).preferredWidth = 80   // DataSource
-        table.columnModel.getColumn(6).preferredWidth = 35   // Rows
-        table.columnModel.getColumn(7).preferredWidth = 70   // Status
+        // 表格
+        setContent(ScrollPaneFactory.createScrollPane(table, 0))
 
-        add(JBScrollPane(table), BorderLayout.CENTER)
-
-        // 工具栏：筛选行 + 操作行，WrapLayout 自动换行
-        dataSourceComboBox.addActionListener { this.updateDatabaseComboBox(); this.filterRecords() }
-        databaseComboBox.addActionListener { this.filterRecords() }
-
-        val filterRow = JPanel(WrapLayout(FlowLayout.LEFT, 4, 2))
-        filterRow.add(JLabel("DataSource:"))
-        filterRow.add(dataSourceComboBox)
-        filterRow.add(JLabel("Database:"))
-        filterRow.add(databaseComboBox)
-
-        val actionRow = JPanel(WrapLayout(FlowLayout.LEFT, 4, 2))
-        actionRow.add(this.createButton("Rollback") { this.doRollback() })
-        actionRow.add(this.createButton("Refresh") { this.loadRecords() })
-        actionRow.add(this.createButton("Clear") { this.doClear() })
-        actionRow.add(this.createButton("Settings") { ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java) })
-
-        val toolbar = JPanel()
-        toolbar.layout = BoxLayout(toolbar, BoxLayout.Y_AXIS)
-        toolbar.add(filterRow)
-        toolbar.add(actionRow)
-        add(toolbar, BorderLayout.NORTH)
-
-        // 右键菜单 + 双击查看单元格值
+        // 右键菜单 + 双击查看
         table.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
@@ -103,81 +107,105 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         this.loadRecords()
     }
 
-    private fun handlePopup(e: MouseEvent) {
-        if (!e.isPopupTrigger) return
-        val row = table.rowAtPoint(e.point)
-        if (row < 0) return
-        table.setRowSelectionInterval(row, row)
-        val record = records[row]
+    // ==================== Actions ====================
 
-        val menu = JPopupMenu()
-        val rollbackItem = JMenuItem("Rollback")
-        rollbackItem.isEnabled = record.status != "ROLLED_BACK"
-        rollbackItem.addActionListener { this.doRollback() }
-        menu.add(rollbackItem)
-
-        val deleteItem = JMenuItem("Delete")
-        deleteItem.addActionListener { this.doDeleteSelected() }
-        menu.add(deleteItem)
-
-        menu.show(table, e.x, e.y)
+    private inner class RollbackAction : DumbAwareAction("Rollback", "Rollback selected record", AllIcons.Actions.Rollback) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(e: AnActionEvent) { e.presentation.isEnabled = table.selectedRow >= 0 }
+        override fun actionPerformed(e: AnActionEvent) { this@BackupHistoryPanel.doRollback() }
     }
 
-    private fun createButton(text: String, action: () -> Unit): JButton {
-        val btn = JButton(text)
-        btn.addActionListener { action() }
-        return btn
+    private inner class RefreshAction : DumbAwareAction("Refresh", "Refresh backup list", AllIcons.Actions.Refresh) {
+        override fun getActionUpdateThread() = ActionUpdateThread.BGT
+        override fun actionPerformed(e: AnActionEvent) { this@BackupHistoryPanel.loadRecords() }
     }
+
+    private inner class ClearAction : DumbAwareAction("Clear", "Clear filtered records", AllIcons.Actions.GC) {
+        override fun getActionUpdateThread() = ActionUpdateThread.BGT
+        override fun actionPerformed(e: AnActionEvent) { this@BackupHistoryPanel.doClear() }
+    }
+
+    private inner class SettingsAction : DumbAwareAction("Settings", "Open DML Backup settings", AllIcons.General.Settings) {
+        override fun getActionUpdateThread() = ActionUpdateThread.BGT
+        override fun actionPerformed(e: AnActionEvent) {
+            ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java)
+        }
+    }
+
+    private inner class DataSourceFilterAction : DumbAwareAction("DS: All", "Filter by data source", AllIcons.General.Filter) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(e: AnActionEvent) { e.presentation.text = "DS: $selectedDataSource" }
+        override fun actionPerformed(e: AnActionEvent) {
+            val group = DefaultActionGroup()
+            group.add(object : DumbAwareAction("All") {
+                override fun actionPerformed(e: AnActionEvent) {
+                    selectedDataSource = "All"; selectedDatabase = "All"
+                    this@BackupHistoryPanel.filterRecords()
+                }
+            })
+            allRecords.map { extractDataSourceName(it.connectionInfo) }.distinct().forEach { ds ->
+                group.add(object : DumbAwareAction(ds) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        selectedDataSource = ds; selectedDatabase = "All"
+                        this@BackupHistoryPanel.filterRecords()
+                    }
+                })
+            }
+            val popup = JBPopupFactory.getInstance().createActionGroupPopup(
+                "Select DataSource", group, e.dataContext, JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, false
+            )
+            popup.showUnderneathOf(e.inputEvent?.component ?: this@BackupHistoryPanel)
+        }
+    }
+
+    private inner class DatabaseFilterAction : DumbAwareAction("DB: All", "Filter by database", AllIcons.Nodes.DataSchema) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(e: AnActionEvent) {
+            e.presentation.text = "DB: $selectedDatabase"
+            e.presentation.isEnabled = selectedDataSource != "All"
+        }
+        override fun actionPerformed(e: AnActionEvent) {
+            val group = DefaultActionGroup()
+            group.add(object : DumbAwareAction("All") {
+                override fun actionPerformed(e: AnActionEvent) {
+                    selectedDatabase = "All"
+                    this@BackupHistoryPanel.filterRecords()
+                }
+            })
+            val filteredByDs = allRecords.filter { extractDataSourceName(it.connectionInfo) == selectedDataSource }
+            filteredByDs.map { extractDatabaseName(it.tableName) }.filter { it.isNotEmpty() }.distinct().forEach { db ->
+                group.add(object : DumbAwareAction(db) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        selectedDatabase = db
+                        this@BackupHistoryPanel.filterRecords()
+                    }
+                })
+            }
+            val popup = JBPopupFactory.getInstance().createActionGroupPopup(
+                "Select Database", group, e.dataContext, JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, false
+            )
+            popup.showUnderneathOf(e.inputEvent?.component ?: this@BackupHistoryPanel)
+        }
+    }
+
+    // ==================== Data ====================
 
     fun loadRecords() {
         try {
             allRecords = BackupStorage.findAll()
-
-            // 更新数据源下拉框
-            val selectedDs = dataSourceComboBox.selectedItem as? String
-            val dataSources = allRecords.map { this.extractDataSourceName(it.connectionInfo) }.distinct()
-            dataSourceComboBox.removeAllItems()
-            dataSourceComboBox.addItem("All")
-            dataSources.forEach { dataSourceComboBox.addItem(it) }
-            if (selectedDs != null && selectedDs in dataSources) dataSourceComboBox.selectedItem = selectedDs
-
-            this.updateDatabaseComboBox()
             this.filterRecords()
         } catch (e: Exception) {
             log.error("Failed to load backup records", e)
         }
     }
 
-    /** 根据当前选中的数据源，更新库下拉框。DataSource 为 All 时禁用库筛选 */
-    private fun updateDatabaseComboBox() {
-        val selectedDs = dataSourceComboBox.selectedItem as? String
-
-        databaseComboBox.removeAllItems()
-        databaseComboBox.addItem("All")
-
-        if (selectedDs == null || selectedDs == "All") {
-            databaseComboBox.isEnabled = false
-            return
-        }
-
-        databaseComboBox.isEnabled = true
-        val selectedDb = databaseComboBox.selectedItem as? String
-        val filteredByDs = allRecords.filter { this.extractDataSourceName(it.connectionInfo) == selectedDs }
-        val databases = filteredByDs.map { this.extractDatabaseName(it.tableName) }.filter { it.isNotEmpty() }.distinct()
-        databases.forEach { databaseComboBox.addItem(it) }
-        if (selectedDb != null && selectedDb in databases) databaseComboBox.selectedItem = selectedDb
-    }
-
     private fun filterRecords() {
-        val selectedDs = dataSourceComboBox.selectedItem as? String
-        val selectedDb = databaseComboBox.selectedItem as? String
-
         records = allRecords
-        if (selectedDs != null && selectedDs != "All") {
-            records = records.filter { this.extractDataSourceName(it.connectionInfo) == selectedDs }
+        if (selectedDataSource != "All") {
+            records = records.filter { this.extractDataSourceName(it.connectionInfo) == selectedDataSource }
         }
-        if (selectedDb != null && selectedDb != "All") {
-            records = records.filter { this.extractDatabaseName(it.tableName) == selectedDb }
+        if (selectedDatabase != "All") {
+            records = records.filter { this.extractDatabaseName(it.tableName) == selectedDatabase }
         }
 
         tableModel.rowCount = 0
@@ -195,7 +223,45 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         }
     }
 
-    /** 双击单元格，在单元格位置弹出浮层显示完整值 */
+    // ==================== Helpers ====================
+
+    private fun extractTableName(tableName: String): String = tableName.substringAfterLast(".")
+    private fun extractDatabaseName(tableName: String): String =
+        if (tableName.contains(".")) tableName.substringBeforeLast(".") else ""
+    private fun extractDataSourceName(connectionInfo: String): String =
+        connectionInfo.substringBeforeLast(" (").ifEmpty { connectionInfo }
+
+    private fun getSelectedRecord(): BackupRecord? {
+        val row = table.selectedRow
+        if (row < 0) {
+            Messages.showWarningDialog(project, "Please select a record first", "DML Backup")
+            return null
+        }
+        return records[row]
+    }
+
+    // ==================== UI Events ====================
+
+    private fun handlePopup(e: MouseEvent) {
+        if (!e.isPopupTrigger) return
+        val row = table.rowAtPoint(e.point)
+        if (row < 0) return
+        table.setRowSelectionInterval(row, row)
+        val record = records[row]
+
+        val menu = JPopupMenu()
+        val rollbackItem = JMenuItem("Rollback", AllIcons.Actions.Rollback)
+        rollbackItem.isEnabled = record.status != "ROLLED_BACK"
+        rollbackItem.addActionListener { this.doRollback() }
+        menu.add(rollbackItem)
+
+        val deleteItem = JMenuItem("Delete", AllIcons.General.Delete)
+        deleteItem.addActionListener { this.doDeleteSelected() }
+        menu.add(deleteItem)
+
+        menu.show(table, e.x, e.y)
+    }
+
     private fun showCellValue(e: MouseEvent) {
         val row = table.rowAtPoint(e.point)
         val col = table.columnAtPoint(e.point)
@@ -211,7 +277,7 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         textArea.rows = minOf(value.length / 30 + 1, 8)
         textArea.columns = 30
 
-        val popup = com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+        val popup = JBPopupFactory.getInstance()
             .createComponentPopupBuilder(JBScrollPane(textArea), textArea)
             .setRequestFocus(true)
             .setCancelOnClickOutside(true)
@@ -224,28 +290,10 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         popup.showInScreenCoordinates(table, point)
     }
 
-    private fun extractTableName(tableName: String): String = tableName.substringAfterLast(".")
+    // ==================== Operations ====================
 
-    private fun extractDatabaseName(tableName: String): String =
-        if (tableName.contains(".")) tableName.substringBeforeLast(".") else ""
-
-    private fun extractDataSourceName(connectionInfo: String): String {
-        return connectionInfo.substringBeforeLast(" (").ifEmpty { connectionInfo }
-    }
-
-    private fun getSelectedRecord(): BackupRecord? {
-        val row = table.selectedRow
-        if (row < 0) {
-            Messages.showWarningDialog(project, "Please select a record first", "DML Backup")
-            return null
-        }
-        return records[row]
-    }
-
-    /** 清空当前筛选条件下的所有记录 */
     private fun doClear() {
         if (records.isEmpty()) return
-
         val confirm = Messages.showYesNoDialog(
             project,
             "Delete all ${records.size} backup record(s) under current filter?\n\nThis cannot be undone.",
@@ -253,12 +301,10 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
             Messages.getWarningIcon()
         )
         if (confirm != Messages.YES) return
-
         BackupStorage.deleteByIds(records.map { it.id })
         this.loadRecords()
     }
 
-    /** 删除选中的单条记录 */
     private fun doDeleteSelected() {
         val record = this.getSelectedRecord() ?: return
         val confirm = Messages.showYesNoDialog(
@@ -268,7 +314,6 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
             Messages.getWarningIcon()
         )
         if (confirm != Messages.YES) return
-
         BackupStorage.deleteById(record.id)
         this.loadRecords()
     }
@@ -340,44 +385,6 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         } catch (e: Exception) {
             log.error("Rollback failed", e)
             Messages.showErrorDialog(project, "Rollback failed: ${e.message}", "DML Backup")
-        }
-    }
-}
-
-/**
- * 自动换行的 FlowLayout：空间不够时组件换到下一行，而非隐藏
- */
-class WrapLayout(align: Int = FlowLayout.LEFT, hgap: Int = 5, vgap: Int = 5) : FlowLayout(align, hgap, vgap) {
-    override fun preferredLayoutSize(target: java.awt.Container): java.awt.Dimension {
-        return this.computeSize(target, true)
-    }
-
-    override fun minimumLayoutSize(target: java.awt.Container): java.awt.Dimension {
-        return this.computeSize(target, false)
-    }
-
-    private fun computeSize(target: java.awt.Container, preferred: Boolean): java.awt.Dimension {
-        synchronized(target.treeLock) {
-            val targetWidth = if (target.width > 0) target.width else Int.MAX_VALUE
-            val insets = target.insets
-            val maxWidth = targetWidth - insets.left - insets.right - hgap * 2
-            var x = 0
-            var y = 0
-            var rowHeight = 0
-
-            for (comp in target.components) {
-                if (!comp.isVisible) continue
-                val d = if (preferred) comp.preferredSize else comp.minimumSize
-                if (x > 0 && x + d.width > maxWidth) {
-                    y += rowHeight + vgap
-                    x = 0
-                    rowHeight = 0
-                }
-                x += d.width + hgap
-                rowHeight = maxOf(rowHeight, d.height)
-            }
-            y += rowHeight + insets.top + insets.bottom + vgap * 2
-            return java.awt.Dimension(targetWidth, y)
         }
     }
 }
