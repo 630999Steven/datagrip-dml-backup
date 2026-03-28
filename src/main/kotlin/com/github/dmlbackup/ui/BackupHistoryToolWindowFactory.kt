@@ -53,15 +53,13 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         override fun isCellEditable(row: Int, column: Int) = false
     }
 
-    private val defaultRowHeight = JBUI.scale(24)
-    private var expandedRow = -1
-
     private val table = JBTable(tableModel).apply {
-        setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        setSelectionMode(ListSelectionModel.SINGLE_INTERVAL_SELECTION)
+        setCellSelectionEnabled(true)
         setStriped(true)
         setShowGrid(true)
         gridColor = JBUI.CurrentTheme.CustomFrameDecorations.separatorForeground()
-        rowHeight = defaultRowHeight
+        rowHeight = JBUI.scale(24)
         tableHeader.reorderingAllowed = false
         emptyText.text = "No DML backup records"
 
@@ -104,7 +102,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             override fun mousePressed(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 2) this@BackupHistoryPanel.toggleRowExpand(e)
+                if (e.clickCount == 2) this@BackupHistoryPanel.copyCellValue(e)
             }
         })
 
@@ -266,34 +264,14 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         menu.show(table, e.x, e.y)
     }
 
-    /** 双击展开/折叠行高度，显示完整内容 */
-    private fun toggleRowExpand(e: MouseEvent) {
+    /** 双击复制选中单元格内容到剪贴板 */
+    private fun copyCellValue(e: MouseEvent) {
         val row = table.rowAtPoint(e.point)
-        if (row < 0) return
-
-        // 折叠之前展开的行
-        if (expandedRow >= 0 && expandedRow < table.rowCount && expandedRow != row) {
-            table.setRowHeight(expandedRow, defaultRowHeight)
-        }
-
-        if (expandedRow == row) {
-            // 再次双击折叠
-            table.setRowHeight(row, defaultRowHeight)
-            expandedRow = -1
-        } else {
-            // 计算需要的高度：取所有列内容最大需要的行数
-            var maxLines = 1
-            for (col in 0 until table.columnCount) {
-                val value = table.getValueAt(row, col)?.toString() ?: ""
-                val colWidth = table.columnModel.getColumn(col).width
-                val charPerLine = maxOf(colWidth / (table.font.size / 2 + 1), 1)
-                val lines = maxOf((value.length + charPerLine - 1) / charPerLine, 1)
-                maxLines = maxOf(maxLines, lines)
-            }
-            val expandedHeight = minOf(maxLines, 10) * defaultRowHeight
-            table.setRowHeight(row, maxOf(expandedHeight, defaultRowHeight))
-            expandedRow = row
-        }
+        val col = table.columnAtPoint(e.point)
+        if (row < 0 || col < 0) return
+        val value = table.getValueAt(row, col)?.toString() ?: ""
+        val selection = java.awt.datatransfer.StringSelection(value)
+        java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, null)
     }
 
     // ==================== Operations ====================
