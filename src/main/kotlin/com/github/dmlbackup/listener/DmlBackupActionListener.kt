@@ -37,7 +37,13 @@ class DmlBackupActionListener : AnActionListener {
         }
 
         if (actionId != "Console.Jdbc.Execute") return
+        this.handleConsoleExecute(event)
+    }
 
+    /**
+     * 处理 SQL Console 执行
+     */
+    private fun handleConsoleExecute(event: AnActionEvent) {
         if (!DmlBackupSettings.getInstance().enabled) return
 
         val editor = event.getData(CommonDataKeys.EDITOR) ?: return
@@ -93,25 +99,28 @@ class DmlBackupActionListener : AnActionListener {
             val hookup = this.invoke(grid, "getDataHookup") ?: return
             val mutator = this.invoke(hookup, "getMutator") ?: return
 
-            // 检查是否有待提交的变更
             val hasPending = this.invoke(mutator, "hasPendingChanges") as? Boolean ?: return
             if (!hasPending) return
 
-            // 获取表名
+            // 表名：GridHelper → VirtualFile 文件名
             val gridHelper = this.invoke(grid, "getGridHelper")
-            val tableName = (this.invokeWith(gridHelper, "getTableName", grid) ?: "unknown").toString()
+            val tableName = this.invokeWith(gridHelper, "getTableName", grid)?.toString()
+                ?: event.getData(CommonDataKeys.VIRTUAL_FILE)?.nameWithoutExtension
+                ?: "unknown"
 
-            // 获取连接信息
-            val connInfo = this.resolveConnectionInfo(grid)
+            // 连接信息：从 hookup 或 event 中获取数据源
+            val connInfo = this.resolveConnectionInfo(hookup, event)
+
+            // MySQL 检查
             if (!connInfo.contains("mysql", ignoreCase = true) && !connInfo.contains("mariadb", ignoreCase = true)) return
 
-            // 获取原始数据 model (DataAccessType.DATABASE_DATA)
+            // 获取 DataAccessType 枚举
             val dbDataType = this.findEnumValue("com.intellij.database.run.ui.DataAccessType", "DATABASE_DATA")
             val mutDataType = this.findEnumValue("com.intellij.database.run.ui.DataAccessType", "DATA_WITH_MUTATIONS")
             val dbModel = this.invokeWith(grid, "getDataModel", dbDataType) ?: return
             val mutModel = this.invokeWith(grid, "getDataModel", mutDataType) ?: return
 
-            // 获取列信息
+            // 列信息
             val columnIndices = this.invoke(dbModel, "getColumnIndices") ?: return
             val colIterable = this.invoke(columnIndices, "asIterable") as? Iterable<*> ?: return
             val colList = colIterable.toList()
@@ -120,7 +129,7 @@ class DmlBackupActionListener : AnActionListener {
                 this.invoke(col, "getName")?.toString() ?: "unknown"
             }
 
-            // 获取受影响的行
+            // 按 mutation type 分组
             val affectedRows = this.invoke(mutator, "getAffectedRows") ?: return
             val rowIterable = this.invoke(affectedRows, "asIterable") as? Iterable<*> ?: return
 
@@ -131,9 +140,7 @@ class DmlBackupActionListener : AnActionListener {
             for (rowIdx in rowIterable) {
                 rowIdx ?: continue
                 val mutType = this.invokeWith(mutator, "getMutationType", rowIdx) ?: continue
-                val typeName = mutType.toString()
-
-                when (typeName) {
+                when (mutType.toString()) {
                     "DELETE" -> deleteRows.add(this.readRowData(dbModel, rowIdx, colList, columnNames))
                     "MODIFY" -> updateRows.add(this.readRowData(dbModel, rowIdx, colList, columnNames))
                     "INSERT" -> insertRows.add(this.readRowData(mutModel, rowIdx, colList, columnNames))
@@ -145,9 +152,9 @@ class DmlBackupActionListener : AnActionListener {
             if (insertRows.isNotEmpty()) this.saveGridBackup("INSERT", tableName, connInfo, insertRows, "INSERT ${insertRows.size} row(s) via visual editor")
 
             val total = deleteRows.size + updateRows.size + insertRows.size
-            log.info("DML Backup: grid submit backup completed for $tableName, $total row(s)")
+            log.info("DML Backup: grid backup completed for $tableName, $total row(s)")
         } catch (e: Exception) {
-            log.error("DML Backup: grid submit backup failed", e)
+            log.error("DML Backup: grid backup failed", e)
         }
     }
 
@@ -189,33 +196,75 @@ class DmlBackupActionListener : AnActionListener {
         BackupStorage.trimRecords(DmlBackupSettings.getInstance().maxRecords)
     }
 
-    private fun resolveConnectionInfo(grid: Any): String {
+    /**
+     * 从 hookup 或 event 上下文中解析数据源连接信息
+     */
+    private fun resolveConnectionInfo(hookup: Any, event: AnActionEvent): String {
+        // 方式1：扫描 hookup 所有无参方法，找返回值包含 DataSource 的
         try {
-            // 尝试通过 hookup 链获取 data source
-            val hookup = this.invoke(grid, "getDataHookup") ?: return "unknown"
-            for (methodName in hookup.javaClass.methods.map { it.name }) {
-                if (methodName.contains("DataSource", ignoreCase = true) && hookup.javaClass.getMethod(methodName).parameterCount == 0) {
-                    val ds = hookup.javaClass.getMethod(methodName).invoke(hookup) ?: continue
-                    val name = this.invoke(ds, "getName")?.toString() ?: continue
-                    val url = this.invoke(ds, "getUrl")?.toString() ?: continue
-                    return "$name ($url)"
+            for (method in hookup.javaClass.methods) {
+                if (method.parameterCount != 0) continue
+                val name = method.name.lowercase()
+                if (name.contains("datasource") || name.contains("connection")) {
+                    val result = method.invoke(hookup) ?: continue
+                    val dsName = this.invoke(result, "getName")?.toString()
+                    val dsUrl = this.invoke(result, "getUrl")?.toString()
+                    if (dsName != null && dsUrl != null) return "$dsName ($dsUrl)"
                 }
             }
         } catch (_: Exception) {}
+
+        // 方式2：从 PSI 上下文获取
+        try {
+            val psiElement = event.getData(CommonDataKeys.PSI_ELEMENT)
+            if (psiElement != null) {
+                // 向上查找 DbDataSource
+                var parent: Any? = psiElement
+                while (parent != null) {
+                    val parentClass = parent.javaClass.name
+                    if (parentClass.contains("DbDataSource") || parentClass.contains("DataSource")) {
+                        val dsName = this.invoke(parent, "getName")?.toString()
+                        val dsUrl = this.invoke(parent, "getUrl")?.toString()
+                            ?: this.invoke(this.invoke(parent, "getDelegate"), "getUrl")?.toString()
+                        if (dsName != null && dsUrl != null) return "$dsName ($dsUrl)"
+                    }
+                    parent = this.invoke(parent, "getParent")
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 方式3：从 VirtualFile 获取数据源信息
+        try {
+            val vFile = event.getData(CommonDataKeys.VIRTUAL_FILE)
+            if (vFile != null) {
+                // DatabaseTableVirtualFile 通常包含 data source 信息
+                val ds = this.invoke(vFile, "getDataSource")
+                    ?: this.invoke(vFile, "getDatabase")
+                if (ds != null) {
+                    val dsName = this.invoke(ds, "getName")?.toString()
+                    val dsUrl = this.invoke(ds, "getUrl")?.toString()
+                    if (dsName != null && dsUrl != null) return "$dsName ($dsUrl)"
+                }
+            }
+        } catch (_: Exception) {}
+
         return "unknown (visual editor)"
     }
 
     /** 反射调用无参方法 */
     private fun invoke(obj: Any?, methodName: String): Any? {
         obj ?: return null
-        return obj.javaClass.methods.find { it.name == methodName && it.parameterCount == 0 }?.invoke(obj)
+        return try {
+            obj.javaClass.methods.find { it.name == methodName && it.parameterCount == 0 }?.invoke(obj)
+        } catch (_: Exception) { null }
     }
 
-    /** 反射调用单参数方法 */
+    /** 反射调用方法（按参数数量匹配） */
     private fun invokeWith(obj: Any?, methodName: String, vararg args: Any?): Any? {
         obj ?: return null
-        val method = obj.javaClass.methods.find { it.name == methodName && it.parameterCount == args.size } ?: return null
-        return method.invoke(obj, *args)
+        return try {
+            obj.javaClass.methods.find { it.name == methodName && it.parameterCount == args.size }?.invoke(obj, *args)
+        } catch (_: Exception) { null }
     }
 
     /** 通过类名和枚举值名获取枚举实例 */
