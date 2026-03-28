@@ -69,18 +69,14 @@ class DmlBackupActionListener : AnActionListener {
                 try {
                     val count = BackupService.countAffectedRows(cons, parsed)
                     if (count > maxRows) {
-                        val choice = Messages.showYesNoCancelDialog(
+                        val choice = Messages.showYesNoDialog(
                             event.project,
-                            "Table '${parsed.tableName}': affected rows ($count) exceed backup limit ($maxRows).\n\nContinue with backup anyway?",
+                            "Table '${parsed.tableName}': affected rows ($count) exceed backup limit ($maxRows).\n\nContinue with backup? (SQL will execute regardless)",
                             "DML Backup - Large Table Warning",
-                            "Continue Backup", "Skip Backup", "Cancel",
+                            "Continue Backup", "Skip Backup",
                             Messages.getWarningIcon()
                         )
-                        when (choice) {
-                            Messages.CANCEL -> return // 取消整个操作
-                            Messages.NO -> return     // 跳过备份，SQL 继续执行
-                            // Messages.YES → 继续备份
-                        }
+                        if (choice != Messages.YES) return // 跳过备份，SQL 继续执行
                     }
                 } catch (ex: Exception) {
                     log.warn("DML Backup: count check failed for ${parsed.tableName}", ex)
