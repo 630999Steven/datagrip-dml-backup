@@ -106,9 +106,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         table.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
-            override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 2) this@BackupHistoryPanel.copyCellValue(e)
-            }
+            override fun mouseClicked(e: MouseEvent) {}
         })
 
         this.loadRecords()
@@ -267,16 +265,6 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         menu.add(deleteItem)
 
         menu.show(table, e.x, e.y)
-    }
-
-    /** 双击复制选中单元格内容到剪贴板 */
-    private fun copyCellValue(e: MouseEvent) {
-        val row = table.rowAtPoint(e.point)
-        val col = table.columnAtPoint(e.point)
-        if (row < 0 || col < 0) return
-        val value = table.getValueAt(row, col)?.toString() ?: ""
-        val selection = java.awt.datatransfer.StringSelection(value)
-        java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, null)
     }
 
     // ==================== Operations ====================
