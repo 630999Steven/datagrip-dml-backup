@@ -31,7 +31,7 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
     private val log = Logger.getInstance(BackupHistoryPanel::class.java)
     private val timeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
-    private val columnNames = arrayOf("ID", "Time", "Type", "Table", "Rows", "Status")
+    private val columnNames = arrayOf("ID", "Time", "Type", "Table", "Database", "DataSource", "Rows", "Status")
     private val tableModel = object : DefaultTableModel(columnNames, 0) {
         override fun isCellEditable(row: Int, column: Int) = false
     }
@@ -44,12 +44,14 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
     init {
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
 
-        table.columnModel.getColumn(0).preferredWidth = 40   // ID
-        table.columnModel.getColumn(1).preferredWidth = 130  // Time
-        table.columnModel.getColumn(2).preferredWidth = 55   // Type
-        table.columnModel.getColumn(3).preferredWidth = 120  // Table
-        table.columnModel.getColumn(4).preferredWidth = 40   // Rows
-        table.columnModel.getColumn(5).preferredWidth = 75   // Status
+        table.columnModel.getColumn(0).preferredWidth = 35   // ID
+        table.columnModel.getColumn(1).preferredWidth = 120  // Time
+        table.columnModel.getColumn(2).preferredWidth = 50   // Type
+        table.columnModel.getColumn(3).preferredWidth = 90   // Table
+        table.columnModel.getColumn(4).preferredWidth = 90   // Database
+        table.columnModel.getColumn(5).preferredWidth = 80   // DataSource
+        table.columnModel.getColumn(6).preferredWidth = 35   // Rows
+        table.columnModel.getColumn(7).preferredWidth = 70   // Status
 
         add(JBScrollPane(table), BorderLayout.CENTER)
 
@@ -101,12 +103,21 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
                 r.id,
                 r.createdAt.format(timeFmt),
                 r.operationType,
-                r.tableName,
+                this.extractTableName(r.tableName),
+                this.extractDatabaseName(r.tableName),
+                this.extractDataSourceName(r.connectionInfo),
                 r.rowCount,
                 r.status
             ))
         }
     }
+
+    /** 从 tableName 提取纯表名，格式 "schema.table" → "table" */
+    private fun extractTableName(tableName: String): String = tableName.substringAfterLast(".")
+
+    /** 从 tableName 提取库名，格式 "schema.table" → "schema" */
+    private fun extractDatabaseName(tableName: String): String =
+        if (tableName.contains(".")) tableName.substringBeforeLast(".") else ""
 
     /** 从 connectionInfo 提取数据源名称，格式为 "name (url)" → "name" */
     private fun extractDataSourceName(connectionInfo: String): String {
