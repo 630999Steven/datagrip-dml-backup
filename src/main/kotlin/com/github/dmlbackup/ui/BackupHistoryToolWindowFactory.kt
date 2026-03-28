@@ -68,17 +68,24 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
 
         add(JBScrollPane(table), BorderLayout.CENTER)
 
-        // 工具栏
-        val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
-        toolbar.add(JLabel("DataSource:"))
+        // 工具栏：筛选行 + 操作行
+        val filterRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        filterRow.add(JLabel("DataSource:"))
         dataSourceComboBox.addActionListener { this.updateDatabaseComboBox(); this.filterRecords() }
-        toolbar.add(dataSourceComboBox)
-        toolbar.add(JLabel("Database:"))
+        filterRow.add(dataSourceComboBox)
+        filterRow.add(JLabel("Database:"))
         databaseComboBox.addActionListener { this.filterRecords() }
-        toolbar.add(databaseComboBox)
-        toolbar.add(this.createButton("Refresh") { this.loadRecords() })
-        toolbar.add(this.createButton("Clear") { this.doClear() })
-        toolbar.add(this.createButton("Settings") { ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java) })
+        filterRow.add(databaseComboBox)
+
+        val actionRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        actionRow.add(this.createButton("Refresh") { this.loadRecords() })
+        actionRow.add(this.createButton("Clear") { this.doClear() })
+        actionRow.add(this.createButton("Settings") { ShowSettingsUtil.getInstance().showSettingsDialog(project, DmlBackupConfigurable::class.java) })
+
+        val toolbar = JPanel()
+        toolbar.layout = BoxLayout(toolbar, BoxLayout.Y_AXIS)
+        toolbar.add(filterRow)
+        toolbar.add(actionRow)
         add(toolbar, BorderLayout.NORTH)
 
         // 右键菜单
