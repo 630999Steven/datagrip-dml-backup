@@ -14,6 +14,7 @@ import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.actionSystem.ex.AnActionListener
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.editor.Editor
 import java.time.ZonedDateTime
 import java.util.concurrent.CountDownLatch
@@ -59,6 +60,33 @@ class DmlBackupActionListener : AnActionListener {
             else null
         }
         if (dmlStatements.isEmpty()) return
+
+        // 大表保护：EDT 上做 COUNT 预检 + 弹窗确认
+        val maxRows = DmlBackupSettings.getInstance().maxBackupRows
+        if (maxRows > 0) {
+            for ((_, parsed, cons) in dmlStatements) {
+                if (parsed.type == DmlType.INSERT) continue
+                try {
+                    val count = BackupService.countAffectedRows(cons, parsed)
+                    if (count > maxRows) {
+                        val choice = Messages.showYesNoCancelDialog(
+                            event.project,
+                            "Table '${parsed.tableName}': affected rows ($count) exceed backup limit ($maxRows).\n\nContinue with backup anyway?",
+                            "DML Backup - Large Table Warning",
+                            "Continue Backup", "Skip Backup", "Cancel",
+                            Messages.getWarningIcon()
+                        )
+                        when (choice) {
+                            Messages.CANCEL -> return // 取消整个操作
+                            Messages.NO -> return     // 跳过备份，SQL 继续执行
+                            // Messages.YES → 继续备份
+                        }
+                    }
+                } catch (ex: Exception) {
+                    log.warn("DML Backup: count check failed for ${parsed.tableName}", ex)
+                }
+            }
+        }
 
         log.info("DML Backup: intercepted ${dmlStatements.size} DML statement(s)")
 

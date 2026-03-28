@@ -30,6 +30,32 @@ object BackupService {
     }
 
     /**
+     * COUNT 预检：返回受影响行数，供 Listener 在 EDT 上判断是否需要弹窗确认
+     */
+    fun countAffectedRows(console: JdbcConsole, parsed: ParsedDml): Int {
+        var count = 0
+        ProgressManager.getInstance().runProcess({
+            val connectionPoint = console.target ?: return@runProcess
+            val guardedRef = DatabaseConnectionManager.getInstance()
+                .build(console.project, connectionPoint)
+                .createBlocking() ?: return@runProcess
+            try {
+                val remoteConn = guardedRef.get().remoteConnection
+                val schema = this.resolveSchema(console, remoteConn, parsed.tableName)
+                if (schema != null) {
+                    val useStmt = remoteConn.createStatement()
+                    useStmt.execute("USE `$schema`")
+                    useStmt.close()
+                }
+                count = this.countRows(remoteConn, parsed)
+            } finally {
+                guardedRef.close()
+            }
+        }, EmptyProgressIndicator())
+        return count
+    }
+
+    /**
      * 执行备份：DELETE/UPDATE 通过 SELECT 备份，INSERT 直接从 SQL 解析值
      */
     fun backup(console: JdbcConsole, parsed: ParsedDml, originalSql: String) {
@@ -100,23 +126,6 @@ object BackupService {
                     val useStmt = remoteConn.createStatement()
                     useStmt.execute("USE `$schema`")
                     useStmt.close()
-                }
-
-                // COUNT 预检
-                val maxRows = DmlBackupSettings.getInstance().maxBackupRows
-                if (maxRows > 0) {
-                    val count = this.countRows(remoteConn, parsed)
-                    if (count > maxRows) {
-                        log.warn("DML Backup: row count $count exceeds limit $maxRows, skip backup for ${parsed.tableName}")
-                        NotificationGroupManager.getInstance()
-                            .getNotificationGroup("DML Backup")
-                            .createNotification(
-                                "DML Backup skipped: affected rows ($count) exceed limit ($maxRows)",
-                                NotificationType.WARNING
-                            )
-                            .notify(console.project)
-                        return@runProcess
-                    }
                 }
 
                 // 检测主键
