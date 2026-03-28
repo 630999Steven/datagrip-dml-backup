@@ -57,6 +57,8 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
     private val table = JBTable(tableModel).apply {
         setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
         setStriped(true)
+        setShowGrid(true)
+        gridColor = JBUI.CurrentTheme.CustomFrameDecorations.separatorForeground()
         rowHeight = JBUI.scale(24)
         tableHeader.reorderingAllowed = false
         emptyText.text = "No DML backup records"
