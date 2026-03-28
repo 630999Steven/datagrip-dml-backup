@@ -108,8 +108,11 @@ class DmlBackupActionListener : AnActionListener {
                 ?: event.getData(CommonDataKeys.VIRTUAL_FILE)?.nameWithoutExtension
                 ?: "unknown"
 
-            // 连接信息：尽量从 hookup 或 event 获取，获取不到也继续
-            val connInfo = this.resolveConnectionInfo(hookup, event)
+            // MySQL 检查：通过 DataGridUtil.getDbms(grid) 判断
+            if (!this.isGridMySql(grid)) return
+
+            // 连接信息：通过 DataGridUtilCore.getDatabaseSystem(grid) 获取
+            val connInfo = this.resolveConnectionInfo(grid)
             log.info("DML Backup: grid submit on '$tableName', connInfo='$connInfo'")
 
             // 获取 DataAccessType 枚举
@@ -205,53 +208,58 @@ class DmlBackupActionListener : AnActionListener {
     }
 
     /**
-     * 从 hookup 或 event 上下文中解析数据源连接信息
+     * 通过 DataGridUtil.getDbms(grid) 判断是否为 MySQL
      */
-    private fun resolveConnectionInfo(hookup: Any, event: AnActionEvent): String {
-        // 方式1：扫描 hookup 所有无参方法，找返回值包含 DataSource 的
+    private fun isGridMySql(grid: Any): Boolean {
         try {
-            for (method in hookup.javaClass.methods) {
-                if (method.parameterCount != 0) continue
-                val name = method.name.lowercase()
-                if (name.contains("datasource") || name.contains("connection")) {
-                    val result = method.invoke(hookup) ?: continue
-                    val dsName = this.invoke(result, "getName")?.toString()
-                    val dsUrl = this.invoke(result, "getUrl")?.toString()
-                    if (dsName != null && dsUrl != null) return "$dsName ($dsUrl)"
+            val utilClass = Class.forName("com.intellij.database.datagrid.DataGridUtil")
+            val method = utilClass.methods.find { it.name == "getDbms" && it.parameterCount == 1 } ?: return true
+            val dbms = method.invoke(null, grid) ?: return true
+            val dbmsName = dbms.toString().uppercase()
+            return dbmsName.contains("MYSQL") || dbmsName.contains("MARIADB")
+        } catch (_: Exception) {
+            return true // 获取失败不拦截
+        }
+    }
+
+    /**
+     * 通过 DataGridUtilCore.getDatabaseSystem(grid) → DbImplUtil.getMaybeLocalDataSource() 获取连接信息
+     */
+    private fun resolveConnectionInfo(grid: Any): String {
+        // 路径1：DataGridUtilCore.getDatabaseSystem(grid) → DbDataSource
+        try {
+            val utilCoreClass = Class.forName("com.intellij.database.datagrid.DataGridUtilCore")
+            val getDatabaseSystem = utilCoreClass.methods.find { it.name == "getDatabaseSystem" && it.parameterCount == 1 }
+            val dbDataSource = getDatabaseSystem?.invoke(null, grid)
+            if (dbDataSource != null) {
+                // DbImplUtil.getMaybeLocalDataSource(dbDataSource) → LocalDataSource
+                val implUtilClass = Class.forName("com.intellij.database.util.DbImplUtil")
+                val getLocalDs = implUtilClass.methods.find { it.name == "getMaybeLocalDataSource" && it.parameterCount == 1 }
+                val localDs = getLocalDs?.invoke(null, dbDataSource)
+                if (localDs != null) {
+                    val name = this.invoke(localDs, "getName")?.toString()
+                    val url = this.invoke(localDs, "getUrl")?.toString()
+                    if (name != null && url != null) return "$name ($url)"
                 }
+                // fallback：直接从 DbDataSource 取
+                val name = this.invoke(dbDataSource, "getName")?.toString()
+                val url = this.invoke(this.invoke(dbDataSource, "getConnectionConfig"), "getUrl")?.toString()
+                if (name != null && url != null) return "$name ($url)"
             }
         } catch (_: Exception) {}
 
-        // 方式2：从 PSI 上下文获取
+        // 路径2：hookup 强转 DatabaseGridDataHookUp → getDataSource()
         try {
-            val psiElement = event.getData(CommonDataKeys.PSI_ELEMENT)
-            if (psiElement != null) {
-                // 向上查找 DbDataSource
-                var parent: Any? = psiElement
-                while (parent != null) {
-                    val parentClass = parent.javaClass.name
-                    if (parentClass.contains("DbDataSource") || parentClass.contains("DataSource")) {
-                        val dsName = this.invoke(parent, "getName")?.toString()
-                        val dsUrl = this.invoke(parent, "getUrl")?.toString()
-                            ?: this.invoke(this.invoke(parent, "getDelegate"), "getUrl")?.toString()
-                        if (dsName != null && dsUrl != null) return "$dsName ($dsUrl)"
-                    }
-                    parent = this.invoke(parent, "getParent")
-                }
-            }
-        } catch (_: Exception) {}
-
-        // 方式3：从 VirtualFile 获取数据源信息
-        try {
-            val vFile = event.getData(CommonDataKeys.VIRTUAL_FILE)
-            if (vFile != null) {
-                // DatabaseTableVirtualFile 通常包含 data source 信息
-                val ds = this.invoke(vFile, "getDataSource")
-                    ?: this.invoke(vFile, "getDatabase")
-                if (ds != null) {
-                    val dsName = this.invoke(ds, "getName")?.toString()
-                    val dsUrl = this.invoke(ds, "getUrl")?.toString()
-                    if (dsName != null && dsUrl != null) return "$dsName ($dsUrl)"
+            val hookup = this.invoke(grid, "getDataHookup")
+            val ds = this.invoke(hookup, "getDataSource")
+            if (ds != null) {
+                val implUtilClass = Class.forName("com.intellij.database.util.DbImplUtil")
+                val getLocalDs = implUtilClass.methods.find { it.name == "getMaybeLocalDataSource" && it.parameterCount == 1 }
+                val localDs = getLocalDs?.invoke(null, ds)
+                if (localDs != null) {
+                    val name = this.invoke(localDs, "getName")?.toString()
+                    val url = this.invoke(localDs, "getUrl")?.toString()
+                    if (name != null && url != null) return "$name ($url)"
                 }
             }
         } catch (_: Exception) {}
