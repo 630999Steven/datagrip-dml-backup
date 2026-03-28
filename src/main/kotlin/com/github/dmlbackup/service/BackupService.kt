@@ -1,0 +1,252 @@
+package com.github.dmlbackup.service
+
+import com.github.dmlbackup.model.BackupRecord
+import com.github.dmlbackup.settings.DmlBackupSettings
+import com.github.dmlbackup.storage.BackupStorage
+import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonNull
+import com.google.gson.JsonObject
+import com.intellij.database.console.JdbcConsole
+import com.intellij.database.dataSource.DatabaseConnectionManager
+import com.intellij.database.remote.jdbc.RemoteConnection
+import com.intellij.database.remote.jdbc.RemoteResultSet
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.EmptyProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import java.time.ZonedDateTime
+
+object BackupService {
+
+    private val log = Logger.getInstance(BackupService::class.java)
+
+    private val SYSTEM_SCHEMAS = setOf(
+        "information_schema", "mysql", "performance_schema", "sys"
+    )
+
+    fun isMySql(console: JdbcConsole): Boolean {
+        val url = console.dataSource?.url ?: return false
+        return url.startsWith("jdbc:mysql://") || url.startsWith("jdbc:mariadb://")
+    }
+
+    /**
+     * 执行备份：DELETE/UPDATE 通过 SELECT 备份，INSERT 直接从 SQL 解析值
+     */
+    fun backup(console: JdbcConsole, parsed: ParsedDml, originalSql: String) {
+        val connInfo = "${console.dataSource?.name ?: "unknown"} (${console.dataSource?.url ?: "unknown"})"
+
+        if (parsed.type == DmlType.INSERT) {
+            this.backupInsert(parsed, originalSql, connInfo)
+            return
+        }
+
+        this.backupSelectBased(console, parsed, originalSql, connInfo)
+    }
+
+    /**
+     * INSERT 备份：直接从 SQL 中解析列名和值，不需要查询数据库
+     */
+    private fun backupInsert(parsed: ParsedDml, originalSql: String, connInfo: String) {
+        val columns = parsed.insertColumns ?: run {
+            log.warn("DML Backup: INSERT without column list, cannot backup")
+            return
+        }
+        val rows = parsed.insertValues ?: return
+
+        val gson = Gson()
+        val jsonArray = JsonArray()
+        for (values in rows) {
+            val obj = JsonObject()
+            columns.forEachIndexed { idx, name ->
+                val value = values.getOrNull(idx)
+                if (value == null) obj.add(name, JsonNull.INSTANCE)
+                else obj.addProperty(name, value)
+            }
+            jsonArray.add(obj)
+        }
+
+        val record = BackupRecord(
+            createdAt = ZonedDateTime.now(),
+            operationType = parsed.type.name,
+            tableName = parsed.tableName,
+            originalSql = originalSql,
+            connectionInfo = connInfo,
+            backupDataJson = gson.toJson(jsonArray),
+            rowCount = rows.size,
+            partialColumns = true
+        )
+
+        val id = BackupStorage.save(record)
+        log.info("DML Backup: saved INSERT backup id=$id, rowCount=${rows.size} for table: ${parsed.tableName}")
+        BackupStorage.trimRecords(DmlBackupSettings.getInstance().maxRecords)
+    }
+
+    /**
+     * DELETE/UPDATE 备份：通过 SELECT FOR UPDATE 查询备份原始数据
+     */
+    private fun backupSelectBased(console: JdbcConsole, parsed: ParsedDml, originalSql: String, connInfo: String) {
+        ProgressManager.getInstance().runProcess({
+            val connectionPoint = console.target
+                ?: throw IllegalStateException("No connection point found for current console")
+
+            val guardedRef = DatabaseConnectionManager.getInstance()
+                .build(console.project, connectionPoint)
+                .createBlocking()
+                ?: throw IllegalStateException("Failed to create database connection")
+
+            try {
+                val remoteConn = guardedRef.get().remoteConnection
+
+                val schema = this.resolveSchema(console, remoteConn, parsed.tableName)
+                if (schema != null) {
+                    log.info("DML Backup: USE `$schema`")
+                    val useStmt = remoteConn.createStatement()
+                    useStmt.execute("USE `$schema`")
+                    useStmt.close()
+                }
+
+                // COUNT 预检
+                val maxRows = DmlBackupSettings.getInstance().maxBackupRows
+                if (maxRows > 0) {
+                    val count = this.countRows(remoteConn, parsed)
+                    if (count > maxRows) {
+                        log.warn("DML Backup: row count $count exceeds limit $maxRows, skip backup for ${parsed.tableName}")
+                        NotificationGroupManager.getInstance()
+                            .getNotificationGroup("DML Backup")
+                            .createNotification(
+                                "DML Backup skipped: affected rows ($count) exceed limit ($maxRows)",
+                                NotificationType.WARNING
+                            )
+                            .notify(null)
+                        return@runProcess
+                    }
+                }
+
+                // 检测主键
+                val primaryKeys = this.detectPrimaryKeys(remoteConn, parsed.tableName)
+                val pkJson = if (primaryKeys.isNotEmpty()) Gson().toJson(primaryKeys) else null
+
+                // SELECT FOR UPDATE 事务包裹
+                remoteConn.setAutoCommit(false)
+                try {
+                    val forUpdateSql = parsed.backupSql + " FOR UPDATE"
+                    val stmt = remoteConn.createStatement()
+                    try {
+                        log.info("DML Backup: executing backup SQL: $forUpdateSql")
+                        val rs = stmt.executeQuery(forUpdateSql)
+                        val (json, rowCount) = this.resultSetToJson(rs)
+                        rs.close()
+
+                        val record = BackupRecord(
+                            createdAt = ZonedDateTime.now(),
+                            operationType = parsed.type.name,
+                            tableName = parsed.tableName,
+                            originalSql = originalSql,
+                            connectionInfo = connInfo,
+                            backupDataJson = json,
+                            rowCount = rowCount,
+                            primaryKeys = pkJson
+                        )
+
+                        val id = BackupStorage.save(record)
+                        log.info("DML Backup: saved id=$id, rowCount=$rowCount for table: ${parsed.tableName}")
+                        BackupStorage.trimRecords(DmlBackupSettings.getInstance().maxRecords)
+                    } finally {
+                        stmt.close()
+                    }
+                    remoteConn.commit()
+                } catch (ex: Exception) {
+                    remoteConn.rollback()
+                    throw ex
+                } finally {
+                    remoteConn.setAutoCommit(true)
+                }
+            } finally {
+                guardedRef.close()
+            }
+        }, EmptyProgressIndicator())
+    }
+
+    private fun countRows(remoteConn: RemoteConnection, parsed: ParsedDml): Int {
+        val countSql = parsed.backupSql.replaceFirst(
+            Regex("SELECT\\s+.*?\\s+FROM", RegexOption.IGNORE_CASE), "SELECT COUNT(*) FROM"
+        )
+        val stmt = remoteConn.createStatement()
+        try {
+            val rs = stmt.executeQuery(countSql)
+            rs.next()
+            val count = rs.getInt(1)
+            rs.close()
+            return count
+        } finally {
+            stmt.close()
+        }
+    }
+
+    private fun detectPrimaryKeys(remoteConn: RemoteConnection, tableName: String): List<String> {
+        val stmt = remoteConn.createStatement()
+        try {
+            val rs = stmt.executeQuery("SHOW KEYS FROM `$tableName` WHERE Key_name = 'PRIMARY'")
+            val keys = mutableListOf<Pair<Int, String>>()
+            while (rs.next()) {
+                keys.add(rs.getInt("Seq_in_index") to rs.getString("Column_name"))
+            }
+            rs.close()
+            return keys.sortedBy { it.first }.map { it.second }
+        } finally {
+            stmt.close()
+        }
+    }
+
+    /**
+     * 推断当前使用的 database/schema：先从 URL 解析，再从 INFORMATION_SCHEMA 查询
+     */
+    private fun resolveSchema(console: JdbcConsole, remoteConn: RemoteConnection, tableName: String): String? {
+        val url = console.dataSource?.url ?: ""
+        val urlMatch = Regex("://[^/]+/([^?;&]+)").find(url)
+        if (urlMatch != null) return urlMatch.groupValues[1]
+
+        log.info("DML Backup: querying INFORMATION_SCHEMA for table: $tableName")
+        val stmt = remoteConn.createStatement()
+        try {
+            val escapedTable = tableName.replace("'", "''")
+            val rs = stmt.executeQuery(
+                "SELECT TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLES " +
+                "WHERE TABLE_NAME = '$escapedTable' ORDER BY TABLE_SCHEMA"
+            )
+            val schemas = mutableListOf<String>()
+            while (rs.next()) { schemas.add(rs.getString(1)) }
+            rs.close()
+
+            if (schemas.isEmpty()) return null
+
+            val userSchemas = schemas.filter { it.lowercase() !in SYSTEM_SCHEMAS }
+            val result = userSchemas.firstOrNull() ?: schemas.first()
+            log.info("DML Backup: resolved schema from INFORMATION_SCHEMA: $result")
+            return result
+        } finally {
+            stmt.close()
+        }
+    }
+
+    private fun resultSetToJson(rs: RemoteResultSet): Pair<String, Int> {
+        val meta = rs.metaData
+        val columnCount = meta.columnCount
+        val columnNames = (1..columnCount).map { meta.getColumnName(it) }
+
+        val gson = Gson()
+        val jsonArray = JsonArray()
+        while (rs.next()) {
+            val obj = JsonObject()
+            for (i in 1..columnCount) {
+                val value = rs.getObject(i)
+                if (value == null) obj.add(columnNames[i - 1], JsonNull.INSTANCE)
+                else obj.addProperty(columnNames[i - 1], value.toString())
+            }
+            jsonArray.add(obj)
+        }
+        return Pair(gson.toJson(jsonArray), jsonArray.size())
+    }
+}
