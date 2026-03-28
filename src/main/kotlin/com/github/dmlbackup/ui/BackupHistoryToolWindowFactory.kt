@@ -19,6 +19,7 @@ import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import javax.swing.SwingUtilities
 import java.time.format.DateTimeFormatter
 import javax.swing.*
 import javax.swing.table.DefaultTableModel
@@ -193,22 +194,33 @@ class BackupHistoryPanel(private val project: Project) : JPanel(BorderLayout()) 
         }
     }
 
-    /** 双击单元格弹窗显示完整值 */
+    /** 双击单元格，在单元格位置弹出浮层显示完整值 */
     private fun showCellValue(e: MouseEvent) {
         val row = table.rowAtPoint(e.point)
         val col = table.columnAtPoint(e.point)
         if (row < 0 || col < 0) return
         val value = table.getValueAt(row, col)?.toString() ?: ""
-        val colName = columnNames[col]
+        if (value.isEmpty()) return
 
         val textArea = JTextArea(value)
         textArea.isEditable = false
         textArea.lineWrap = true
         textArea.wrapStyleWord = true
+        textArea.font = table.font
+        textArea.rows = minOf(value.length / 30 + 1, 8)
+        textArea.columns = 30
 
-        val scrollPane = JScrollPane(textArea)
-        scrollPane.preferredSize = java.awt.Dimension(400, 150)
-        JOptionPane.showMessageDialog(this, scrollPane, colName, JOptionPane.PLAIN_MESSAGE)
+        val popup = com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(JBScrollPane(textArea), textArea)
+            .setRequestFocus(true)
+            .setCancelOnClickOutside(true)
+            .setCancelOnOtherWindowOpen(true)
+            .createPopup()
+
+        val cellRect = table.getCellRect(row, col, true)
+        val point = java.awt.Point(cellRect.x, cellRect.y + cellRect.height)
+        SwingUtilities.convertPointToScreen(point, table)
+        popup.showInScreenCoordinates(table, point)
     }
 
     private fun extractTableName(tableName: String): String = tableName.substringAfterLast(".")
