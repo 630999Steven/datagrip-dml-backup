@@ -16,9 +16,7 @@ enum class DmlType { DELETE, UPDATE, INSERT, OTHER }
 
 object SqlParser {
 
-    companion object {
-        private const val TABLE_ID = """[`"\[\]]?\w+[`"\[\]]?(?:\.[`"\[\]]?\w+[`"\[\]]?)*"""
-    }
+    private const val TABLE_ID = """[`"\[\]]?\w+[`"\[\]]?(?:\.[`"\[\]]?\w+[`"\[\]]?)*"""
 
     private val OPTS = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
 
