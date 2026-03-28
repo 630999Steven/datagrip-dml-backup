@@ -21,8 +21,9 @@ object BackupStorage {
     init {
         Files.createDirectories(DB_PATH.parent)
         this.getConnection().use { conn ->
-            conn.createStatement().execute("PRAGMA journal_mode=WAL")
-            conn.createStatement().execute(
+            val stmt = conn.createStatement()
+            stmt.execute("PRAGMA journal_mode=WAL")
+            stmt.execute(
                 """
                 CREATE TABLE IF NOT EXISTS backup_record (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,6 +40,7 @@ object BackupStorage {
                 )
                 """.trimIndent()
             )
+            stmt.close()
             this.migrateIfNeeded(conn)
         }
     }
