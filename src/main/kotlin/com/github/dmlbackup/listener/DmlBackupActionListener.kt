@@ -160,12 +160,18 @@ class DmlBackupActionListener : AnActionListener {
         }
     }
 
+    /** Grid 中自增/生成列的占位值 */
+    private val GRID_PLACEHOLDER_VALUES = setOf("GENERATED", "DEFAULT", "AUTO_INCREMENT")
+
     private fun readRowData(model: Any, rowIdx: Any, colList: List<Any?>, columnNames: List<String>): Map<String, String?> {
         val row = mutableMapOf<String, String?>()
         for ((i, colIdx) in colList.withIndex()) {
             colIdx ?: continue
             val value = this.invokeWith(model, "getValueAt", rowIdx, colIdx)
-            row[columnNames[i]] = value?.toString()
+            val strValue = value?.toString()
+            // 跳过 Grid 占位值（自增/生成列）
+            if (strValue != null && strValue.uppercase() in GRID_PLACEHOLDER_VALUES) continue
+            row[columnNames[i]] = strValue
         }
         return row
     }
