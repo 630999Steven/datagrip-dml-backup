@@ -116,7 +116,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             }
             override fun mouseReleased(e: MouseEvent) { this@BackupHistoryPanel.handlePopup(e) }
             override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 2) this@BackupHistoryPanel.showCellPopup(e)
+                if (e.clickCount == 2) this@BackupHistoryPanel.copyCellValue(e)
             }
         })
 
@@ -286,38 +286,23 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         menu.show(table, e.x, e.y)
     }
 
-    /** 双击弹出浮层显示完整单元格值 */
-    private fun showCellPopup(e: MouseEvent) {
+    /** 双击复制单元格内容并提示 */
+    private fun copyCellValue(e: MouseEvent) {
         val row = table.rowAtPoint(e.point)
         val col = table.columnAtPoint(e.point)
         if (row < 0 || col < 0) return
         val value = table.getValueAt(row, col)?.toString() ?: ""
-        if (value.isEmpty()) return
+        val selection = java.awt.datatransfer.StringSelection(value)
+        java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, null)
+
+        // 气泡提示
         val colName = if (col == 0) "ID" else columnNames[col]
-
-        val textArea = JTextArea(value).apply {
-            isEditable = false
-            lineWrap = true
-            wrapStyleWord = true
-            font = table.font
-            rows = minOf(value.length / 30 + 1, 8)
-            columns = 35
-            border = JBUI.Borders.empty(4)
-        }
-        val popup = JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(javax.swing.JScrollPane(textArea), textArea)
-            .setTitle(colName)
-            .setMovable(true)
-            .setResizable(true)
-            .setRequestFocus(true)
-            .setCancelOnClickOutside(true)
-            .setCancelOnOtherWindowOpen(true)
-            .createPopup()
-
-        val cellRect = table.getCellRect(row, col, true)
-        val point = java.awt.Point(cellRect.x, cellRect.y + cellRect.height)
-        SwingUtilities.convertPointToScreen(point, table)
-        popup.showInScreenCoordinates(table, point)
+        val balloon = JBPopupFactory.getInstance()
+            .createHtmlTextBalloonBuilder("Copied: <b>$colName</b>",
+                com.intellij.icons.AllIcons.General.InformationDialog, null, null, null)
+            .setFadeoutTime(1500)
+            .createBalloon()
+        balloon.show(com.intellij.ui.awt.RelativePoint(e), com.intellij.openapi.ui.popup.Balloon.Position.above)
     }
 
     // ==================== Operations ====================
@@ -367,6 +352,23 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             if (proceed != Messages.YES) return
         }
 
+        // INSERT IGNORE / ON DUPLICATE KEY UPDATE 警告
+        if (record.operationType == "INSERT") {
+            val sql = record.originalSql.uppercase()
+            val isUnsafe = sql.contains("INSERT IGNORE") || sql.contains("ON DUPLICATE KEY UPDATE")
+            if (isUnsafe) {
+                val proceed = Messages.showYesNoDialog(
+                    project,
+                    "This INSERT uses IGNORE or ON DUPLICATE KEY UPDATE. " +
+                        "Rows may not have been actually inserted (ignored or updated instead). " +
+                        "Rollback DELETE may delete wrong data.\n\nContinue at your own risk?",
+                    "Unsafe INSERT Rollback Warning",
+                    Messages.getWarningIcon()
+                )
+                if (proceed != Messages.YES) return
+            }
+        }
+
         val confirm = Messages.showYesNoDialog(
             project,
             "Rollback ${record.operationType} on '${this.extractTableName(record.tableName)}' (${record.rowCount} rows)?\n\n${record.originalSql}",
@@ -385,12 +387,12 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             val targetUrl = record.connectionInfo.substringAfterLast("(").removeSuffix(")")
             val allConns = DatabaseConnectionManager.getInstance().activeConnections
             val isMySqlUrl = targetUrl.startsWith("jdbc:mysql://") || targetUrl.startsWith("jdbc:mariadb://")
-            val conn = (if (isMySqlUrl) allConns.firstOrNull { it.connectionPoint.dataSource?.url == targetUrl } else null)
-                ?: allConns.firstOrNull {
-                    val url = it.connectionPoint.dataSource?.url ?: ""
-                    url.startsWith("jdbc:mysql://") || url.startsWith("jdbc:mariadb://")
-                }
-                ?: throw IllegalStateException("No active MySQL connection found. Please connect to the database first.")
+            val conn = if (isMySqlUrl) {
+                allConns.firstOrNull { it.connectionPoint.dataSource?.url == targetUrl }
+                    ?: throw IllegalStateException("Original connection '$targetUrl' is not active. Please connect to it first.")
+            } else {
+                throw IllegalStateException("Cannot determine target database from backup record. Connection info: ${record.connectionInfo}")
+            }
 
             val remoteConn = conn.remoteConnection
             remoteConn.setAutoCommit(false)
