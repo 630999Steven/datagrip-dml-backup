@@ -295,14 +295,15 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         val selection = java.awt.datatransfer.StringSelection(value)
         java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, null)
 
-        // 气泡提示
-        val colName = if (col == 0) "ID" else columnNames[col]
-        val balloon = JBPopupFactory.getInstance()
-            .createHtmlTextBalloonBuilder("Copied: <b>$colName</b>",
-                com.intellij.icons.AllIcons.General.InformationDialog, null, null, null)
-            .setFadeoutTime(1500)
-            .createBalloon()
-        balloon.show(com.intellij.ui.awt.RelativePoint(e), com.intellij.openapi.ui.popup.Balloon.Position.above)
+        val label = com.intellij.codeInsight.hint.HintUtil.createSuccessLabel("Copied")
+        com.intellij.codeInsight.hint.HintManager.getInstance().showHint(
+            label,
+            com.intellij.ui.awt.RelativePoint(e),
+            com.intellij.codeInsight.hint.HintManager.HIDE_BY_ANY_KEY or
+                com.intellij.codeInsight.hint.HintManager.HIDE_BY_OTHER_HINT or
+                com.intellij.codeInsight.hint.HintManager.HIDE_BY_SCROLLING,
+            1000
+        )
     }
 
     // ==================== Operations ====================
