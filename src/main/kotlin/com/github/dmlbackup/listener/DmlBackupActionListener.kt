@@ -3,6 +3,7 @@ package com.github.dmlbackup.listener
 import com.github.dmlbackup.model.BackupRecord
 import com.github.dmlbackup.service.BackupService
 import com.github.dmlbackup.service.DmlType
+import com.github.dmlbackup.service.ParsedDml
 import com.github.dmlbackup.service.SqlParser
 import com.github.dmlbackup.settings.DmlBackupSettings
 import com.github.dmlbackup.storage.BackupStorage
@@ -19,6 +20,7 @@ import com.intellij.openapi.editor.Editor
 import java.time.ZonedDateTime
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class DmlBackupActionListener : AnActionListener {
 
@@ -54,10 +56,14 @@ class DmlBackupActionListener : AnActionListener {
         val cleaned = SqlParser.removeComments(sql)
         val statements = SqlParser.splitStatements(cleaned)
 
-        val dmlStatements = statements.mapNotNull { stmt ->
+        val dmlStatements = mutableListOf<Triple<String, ParsedDml, JdbcConsole>>()
+        for (stmt in statements) {
             val parsed = SqlParser.parse(stmt)
-            if (parsed != null && parsed.type != DmlType.OTHER) Triple(stmt, parsed, console)
-            else null
+            if (parsed != null && parsed.type != DmlType.OTHER) {
+                dmlStatements.add(Triple(stmt, parsed, console))
+            } else if (SqlParser.looksLikeDml(stmt)) {
+                this.notifyUser("Unsupported DML syntax detected, this statement was NOT backed up:\n${stmt.take(100)}", NotificationType.WARNING)
+            }
         }
         if (dmlStatements.isEmpty()) return
 
@@ -87,11 +93,16 @@ class DmlBackupActionListener : AnActionListener {
         log.info("DML Backup: intercepted ${dmlStatements.size} DML statement(s)")
 
         val latch = CountDownLatch(1)
+        val timedOut = AtomicBoolean(false)
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 for ((originalSql, parsed, cons) in dmlStatements) {
+                    if (timedOut.get()) {
+                        log.warn("DML Backup: skipping backup for ${parsed.tableName} due to timeout")
+                        break
+                    }
                     try {
-                        BackupService.backup(cons, parsed, originalSql)
+                        BackupService.backup(cons, parsed, originalSql, timedOutFlag = { timedOut.get() })
                         log.info("DML Backup: backup completed for ${parsed.type} on ${parsed.tableName}")
                     } catch (ex: Exception) {
                         log.error("DML Backup: backup failed for ${parsed.tableName}", ex)
@@ -104,6 +115,7 @@ class DmlBackupActionListener : AnActionListener {
         }
 
         if (!latch.await(10, TimeUnit.SECONDS)) {
+            timedOut.set(true)
             log.warn("DML Backup: backup timed out after 10s, proceeding with action")
             this.notifyUser("DML backup timed out. This operation was NOT backed up, SQL will execute normally.", NotificationType.WARNING)
         }
@@ -172,9 +184,13 @@ class DmlBackupActionListener : AnActionListener {
                 }
             }
 
-            if (deleteRows.isNotEmpty()) this.saveGridBackup("DELETE", tableName, connInfo, deleteRows, "DELETE ${deleteRows.size} row(s) via visual editor")
-            if (updateRows.isNotEmpty()) this.saveGridBackup("UPDATE", tableName, connInfo, updateRows, "UPDATE ${updateRows.size} row(s) via visual editor")
-            if (insertRows.isNotEmpty()) this.saveGridBackup("INSERT", tableName, connInfo, insertRows, "INSERT ${insertRows.size} row(s) via visual editor")
+            // 尝试从 Grid 元数据获取主键列
+            val primaryKeys = this.resolveGridPrimaryKeys(grid)
+            val pkJson = if (primaryKeys.isNotEmpty()) gson.toJson(primaryKeys) else null
+
+            if (deleteRows.isNotEmpty()) this.saveGridBackup("DELETE", tableName, connInfo, deleteRows, "DELETE ${deleteRows.size} row(s) via visual editor", pkJson)
+            if (updateRows.isNotEmpty()) this.saveGridBackup("UPDATE", tableName, connInfo, updateRows, "UPDATE ${updateRows.size} row(s) via visual editor", pkJson)
+            if (insertRows.isNotEmpty()) this.saveGridBackup("INSERT", tableName, connInfo, insertRows, "INSERT ${insertRows.size} row(s) via visual editor", pkJson)
 
             val total = deleteRows.size + updateRows.size + insertRows.size
             log.info("DML Backup: grid backup completed for $tableName, $total row(s)")
@@ -204,20 +220,22 @@ class DmlBackupActionListener : AnActionListener {
             colIdx ?: continue
             val value = this.invokeWith(model, "getValueAt", rowIdx, colIdx)
             val strValue = value?.toString()
-            log.info("DML Backup GRID readRow: col=${columnNames[i]}, value=$value, class=${value?.javaClass?.name}, str=$strValue")
+            log.debug("DML Backup GRID readRow: col=${columnNames[i]}, class=${value?.javaClass?.name}")
             // 跳过 Grid 占位值（自增/生成列）
             if (strValue != null && strValue.uppercase() in GRID_PLACEHOLDER_VALUES) continue
             // null 值和字符串 "null" 都当 null 处理
             row[columnNames[i]] = if (strValue == null || strValue.equals("null", ignoreCase = true)) null else strValue
         }
-        log.info("DML Backup GRID readRow result: $row")
+        log.debug("DML Backup GRID readRow: ${row.size} columns")
         return row
     }
 
     private val nullSafeGson = com.google.gson.GsonBuilder().serializeNulls().create()
 
     private fun saveGridBackup(operationType: String, tableName: String, connInfo: String,
-                               rows: List<Map<String, String?>>, originalSql: String) {
+                               rows: List<Map<String, String?>>, originalSql: String, primaryKeys: String? = null) {
+        // INSERT 可能跳过了 GENERATED/DEFAULT 列，标记为 partial
+        val partial = operationType == "INSERT"
         val record = BackupRecord(
             createdAt = ZonedDateTime.now(),
             operationType = operationType,
@@ -226,7 +244,8 @@ class DmlBackupActionListener : AnActionListener {
             connectionInfo = connInfo,
             backupDataJson = nullSafeGson.toJson(rows),
             rowCount = rows.size,
-            partialColumns = false  // 可视化编辑器提交全部列，不存在部分列问题
+            primaryKeys = primaryKeys,
+            partialColumns = partial
         )
 
         val id = BackupStorage.save(record)
@@ -247,6 +266,32 @@ class DmlBackupActionListener : AnActionListener {
             return this.invoke(parent, "getName")?.toString()
         } catch (_: Exception) {
             return null
+        }
+    }
+
+    /**
+     * 通过 DataGridUtilCore.getDatabaseTable(grid) 获取主键列名
+     */
+    private fun resolveGridPrimaryKeys(grid: Any): List<String> {
+        try {
+            val utilCoreClass = Class.forName("com.intellij.database.datagrid.DataGridUtilCore")
+            val getTable = utilCoreClass.methods.find { it.name == "getDatabaseTable" && it.parameterCount == 1 }
+            val dasTable = getTable?.invoke(null, grid) ?: return emptyList()
+
+            // DasUtil.getPrimaryKey(DasTable) → DasIndex
+            val dasUtilClass = Class.forName("com.intellij.database.util.DasUtil")
+            val getPk = dasUtilClass.methods.find { it.name == "getPrimaryKey" && it.parameterCount == 1 }
+            val pkIndex = getPk?.invoke(null, dasTable) ?: return emptyList()
+
+            // DasIndex.getColumnsRef() → Iterable<DasColumn>
+            val columnsRef = this.invoke(pkIndex, "getColumnsRef") ?: return emptyList()
+            val names = this.invoke(columnsRef, "names")
+            val iterable = this.invoke(names, "asIterable") as? Iterable<*>
+                ?: (names as? Iterable<*>)
+                ?: return emptyList()
+            return iterable.mapNotNull { it?.toString() }
+        } catch (_: Exception) {
+            return emptyList()
         }
     }
 

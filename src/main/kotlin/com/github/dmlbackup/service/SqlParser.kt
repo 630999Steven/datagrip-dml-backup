@@ -9,7 +9,9 @@ data class ParsedDml(
     val whereClause: String?,
     val backupSql: String,
     val insertColumns: List<String>? = null,
-    val insertValues: List<List<String?>>? = null
+    val insertValues: List<List<String?>>? = null,
+    /** INSERT IGNORE / ON DUPLICATE KEY UPDATE 等不可靠回滚的变体 */
+    val unsafeInsert: Boolean = false
 )
 
 enum class DmlType { DELETE, UPDATE, INSERT, OTHER }
@@ -136,13 +138,25 @@ object SqlParser {
         return null
     }
 
+    /** 检测是否像 DML 语句（以 DELETE/UPDATE/INSERT 开头）但 parse() 返回 null */
+    fun looksLikeDml(sql: String): Boolean {
+        val trimmed = sql.trim().uppercase()
+        return trimmed.startsWith("DELETE") || trimmed.startsWith("UPDATE") || trimmed.startsWith("INSERT")
+    }
+
     private fun parseDelete(sql: String): ParsedDml? {
         // 先尝试 JOIN 模式
         DELETE_JOIN.matchEntire(sql)?.let { match ->
-            val tableName = this.cleanIdentifier(match.groupValues[1])
+            val fromTable = this.cleanIdentifier(match.groupValues[1])
             val joinClause = match.groupValues[2].trim()
             val whereClause = match.groupValues[3].trim().ifEmpty { null }
-            val backupSql = "SELECT $tableName.* FROM $tableName $joinClause" +
+            // DELETE t2 FROM t1 JOIN t2 ... → deleteTarget 是被删的表（DELETE 后面的标识符）
+            val deleteTarget = sql.trim().replaceFirst(Regex("^DELETE\\s+", RegexOption.IGNORE_CASE), "")
+                .split("\\s+".toRegex()).first().removeSuffix(".*").let { this.cleanIdentifier(it) }
+            // tableName 应是被删的目标表，不是 FROM 后的表
+            val tableName = if (deleteTarget != fromTable) deleteTarget else fromTable
+            val selectRef = if (deleteTarget != fromTable) deleteTarget else fromTable
+            val backupSql = "SELECT $selectRef.* FROM $fromTable $joinClause" +
                 (whereClause?.let { " $it" } ?: "")
             return ParsedDml(DmlType.DELETE, tableName, whereClause, backupSql)
         }
@@ -159,10 +173,17 @@ object SqlParser {
         // 先尝试 JOIN 模式
         UPDATE_JOIN.matchEntire(sql)?.let { match ->
             val tableWithAlias = match.groupValues[1].trim()
-            val tableName = this.cleanIdentifier(tableWithAlias.split("\\s+".toRegex())[0])
+            val parts = tableWithAlias.split("\\s+".toRegex())
+            val tableName = this.cleanIdentifier(parts[0])
+            // 提取别名：UPDATE table alias JOIN ... 或 UPDATE table AS alias JOIN ...
+            val alias = when {
+                parts.size >= 3 && parts[1].equals("AS", ignoreCase = true) -> this.cleanIdentifier(parts[2])
+                parts.size >= 2 && !parts[1].equals("AS", ignoreCase = true) -> this.cleanIdentifier(parts[1])
+                else -> tableName
+            }
             val joinClause = match.groupValues[2].trim()
             val whereClause = match.groupValues[3].trim().ifEmpty { null }
-            val backupSql = "SELECT $tableName.* FROM $tableWithAlias $joinClause" +
+            val backupSql = "SELECT $alias.* FROM $tableWithAlias $joinClause" +
                 (whereClause?.let { " $it" } ?: "")
             return ParsedDml(DmlType.UPDATE, tableName, whereClause, backupSql)
         }
@@ -179,7 +200,23 @@ object SqlParser {
         val match = INSERT_PATTERN.matchEntire(sql) ?: return null
         val tableName = this.cleanIdentifier(match.groupValues[1])
         val columnsRaw = match.groupValues[2].trim()
-        val valuesRaw = match.groupValues[3].trim()
+        var valuesRaw = match.groupValues[3].trim()
+
+        // 检测不可靠回滚的变体
+        val isIgnore = sql.trimStart().matches(Regex("^INSERT\\s+IGNORE\\s+.*", OPTS))
+        val hasOnDuplicate = sql.contains(Regex("ON\\s+DUPLICATE\\s+KEY\\s+UPDATE", OPTS))
+        val unsafeInsert = isIgnore || hasOnDuplicate
+
+        // 去掉 ON DUPLICATE KEY UPDATE ... 尾部，避免其括号被误解析为 VALUES 行
+        if (hasOnDuplicate) {
+            val onDupIdx = valuesRaw.indexOfFirst {
+                valuesRaw.regionMatches(valuesRaw.indexOf(it), "ON ", 0, 3, ignoreCase = true)
+            }
+            val onDupMatch = Regex("\\)\\s*ON\\s+DUPLICATE\\s+KEY\\s+UPDATE", OPTS).find(valuesRaw)
+            if (onDupMatch != null) {
+                valuesRaw = valuesRaw.substring(0, onDupMatch.range.first + 1) // 保留最后一个 )
+            }
+        }
 
         val columns = if (columnsRaw.isNotEmpty()) {
             columnsRaw.split(",").map { this.cleanIdentifier(it.trim()) }
@@ -188,7 +225,7 @@ object SqlParser {
         // 解析 VALUES 部分，支持多行 INSERT: VALUES (...), (...)
         val rows = this.parseValuesClause(valuesRaw)
 
-        return ParsedDml(DmlType.INSERT, tableName, null, "", columns, rows)
+        return ParsedDml(DmlType.INSERT, tableName, null, "", columns, rows, unsafeInsert)
     }
 
     /**
