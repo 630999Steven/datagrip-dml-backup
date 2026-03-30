@@ -375,8 +375,8 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         if (confirm != Messages.YES) return
 
         try {
-            val sqls = RollbackService.generateRollbackSqls(record)
-            if (sqls.isEmpty()) {
+            val plan = RollbackService.generateRollbackPlan(record)
+            if (plan.isEmpty()) {
                 Messages.showWarningDialog(project, "No rollback SQL generated (empty backup data)", "DML Backup")
                 return
             }
@@ -394,12 +394,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             val remoteConn = conn.remoteConnection
             remoteConn.setAutoCommit(false)
             try {
-                val stmt = remoteConn.createStatement()
-                for (sql in sqls) {
-                    log.info("Executing rollback SQL: $sql")
-                    stmt.executeUpdate(sql)
-                }
-                stmt.close()
+                RollbackService.executeRollback(remoteConn, plan)
                 remoteConn.commit()
             } catch (ex: Exception) {
                 remoteConn.rollback()
@@ -409,7 +404,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             }
 
             BackupStorage.updateStatus(record.id, "ROLLED_BACK")
-            Messages.showInfoMessage(project, "Rollback completed! (${sqls.size} statements)", "DML Backup")
+            Messages.showInfoMessage(project, "Rollback completed! (${plan.size} statements)", "DML Backup")
             this.loadRecords()
         } catch (e: Exception) {
             log.error("Rollback failed", e)

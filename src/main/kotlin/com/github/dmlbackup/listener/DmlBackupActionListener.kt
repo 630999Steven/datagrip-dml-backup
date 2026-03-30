@@ -17,7 +17,9 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.editor.Editor
+import java.sql.Types
 import java.time.ZonedDateTime
+import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -67,34 +69,9 @@ class DmlBackupActionListener : AnActionListener {
         }
         if (dmlStatements.isEmpty()) return
 
-        // 大表保护：COUNT 预检 + 弹窗确认（带进度条，可取消）
-        val maxRows = DmlBackupSettings.getInstance().maxBackupRows
-        if (maxRows > 0) {
-            for ((_, parsed, cons) in dmlStatements) {
-                if (parsed.type == DmlType.INSERT) continue
-                try {
-                    val count = BackupService.countAffectedRows(cons, parsed)
-                    if (count > maxRows) {
-                        val choice = Messages.showYesNoDialog(
-                            event.project,
-                            "Table '${parsed.tableName}': affected rows ($count) exceed backup limit ($maxRows).\n\nContinue with backup? (SQL will execute regardless)",
-                            "DML Backup - Large Table Warning",
-                            "Continue Backup", "Skip Backup",
-                            Messages.getWarningIcon()
-                        )
-                        if (choice != Messages.YES) return // 跳过备份，SQL 继续执行
-                    }
-                } catch (_: com.intellij.openapi.progress.ProcessCanceledException) {
-                    log.info("DML Backup: count check cancelled by user for ${parsed.tableName}, skipping backup")
-                    return // 用户取消了预检，跳过备份
-                } catch (ex: Exception) {
-                    log.warn("DML Backup: count check failed for ${parsed.tableName}", ex)
-                }
-            }
-        }
-
         log.info("DML Backup: intercepted ${dmlStatements.size} DML statement(s)")
 
+        val maxRows = DmlBackupSettings.getInstance().maxBackupRows
         val latch = CountDownLatch(1)
         val timedOut = AtomicBoolean(false)
         val cancelActions = mutableListOf<Runnable>()
@@ -106,6 +83,15 @@ class DmlBackupActionListener : AnActionListener {
                         break
                     }
                     try {
+                        // 大表保护：在后台线程做 COUNT 预检
+                        if (maxRows > 0 && parsed.type != DmlType.INSERT) {
+                            val count = BackupService.countAffectedRows(cons, parsed)
+                            if (count > maxRows) {
+                                log.warn("DML Backup: table '${parsed.tableName}' affected rows ($count) exceed limit ($maxRows), skipping backup")
+                                this.notifyUser("Table '${parsed.tableName}': affected rows ($count) exceed backup limit ($maxRows). Backup skipped.", NotificationType.WARNING)
+                                continue
+                            }
+                        }
                         BackupService.backup(cons, parsed, originalSql,
                             timedOutFlag = { timedOut.get() },
                             cancelHook = { cancelActions.add(it) })
@@ -188,9 +174,9 @@ class DmlBackupActionListener : AnActionListener {
                 rowIdx ?: continue
                 val mutType = this.invokeWith(mutator, "getMutationType", rowIdx) ?: continue
                 when (mutType.toString()) {
-                    "DELETE" -> if (dbColInfo != null) deleteRows.add(this.readRowData(dbModel, rowIdx, dbColInfo.first, dbColInfo.second))
-                    "MODIFY" -> if (dbColInfo != null) updateRows.add(this.readRowData(dbModel, rowIdx, dbColInfo.first, dbColInfo.second))
-                    "INSERT" -> if (mutColInfo != null) insertRows.add(this.readRowData(mutModel, rowIdx, mutColInfo.first, mutColInfo.second))
+                    "DELETE" -> if (dbColInfo != null) deleteRows.add(this.readRowData(dbModel, rowIdx, dbColInfo))
+                    "MODIFY" -> if (dbColInfo != null) updateRows.add(this.readRowData(dbModel, rowIdx, dbColInfo))
+                    "INSERT" -> if (mutColInfo != null) insertRows.add(this.readRowData(mutModel, rowIdx, mutColInfo))
                 }
             }
 
@@ -198,9 +184,13 @@ class DmlBackupActionListener : AnActionListener {
             val primaryKeys = this.resolveGridPrimaryKeys(grid)
             val pkJson = if (primaryKeys.isNotEmpty()) gson.toJson(primaryKeys) else null
 
-            if (deleteRows.isNotEmpty()) this.saveGridBackup("DELETE", tableName, connInfo, deleteRows, "DELETE ${deleteRows.size} row(s) via visual editor", pkJson)
-            if (updateRows.isNotEmpty()) this.saveGridBackup("UPDATE", tableName, connInfo, updateRows, "UPDATE ${updateRows.size} row(s) via visual editor", pkJson)
-            if (insertRows.isNotEmpty()) this.saveGridBackup("INSERT", tableName, connInfo, insertRows, "INSERT ${insertRows.size} row(s) via visual editor", pkJson)
+            // 用 dbColInfo 的类型信息（DELETE/UPDATE 用 db model 列，INSERT 用 mut model 列）
+            val dbTypes = dbColInfo?.let { info -> info.names.zip(info.jdbcTypes).toMap() }
+            val mutTypes = mutColInfo?.let { info -> info.names.zip(info.jdbcTypes).toMap() }
+
+            if (deleteRows.isNotEmpty()) this.saveGridBackup("DELETE", tableName, connInfo, deleteRows, "DELETE ${deleteRows.size} row(s) via visual editor", pkJson, dbTypes)
+            if (updateRows.isNotEmpty()) this.saveGridBackup("UPDATE", tableName, connInfo, updateRows, "UPDATE ${updateRows.size} row(s) via visual editor", pkJson, dbTypes)
+            if (insertRows.isNotEmpty()) this.saveGridBackup("INSERT", tableName, connInfo, insertRows, "INSERT ${insertRows.size} row(s) via visual editor", pkJson, mutTypes)
 
             val total = deleteRows.size + updateRows.size + insertRows.size
             log.info("DML Backup: grid backup completed for $tableName, $total row(s)")
@@ -209,50 +199,120 @@ class DmlBackupActionListener : AnActionListener {
         }
     }
 
-    /** 获取 model 的列索引和列名列表 */
-    private fun getColumnInfo(model: Any): Pair<List<Any?>, List<String>>? {
+    /** 列信息：索引列表、列名列表、JDBC 类型列表 */
+    private data class ColumnInfo(val indices: List<Any?>, val names: List<String>, val jdbcTypes: List<Int>)
+
+    /** 获取 model 的列索引、列名和 JDBC 类型 */
+    private fun getColumnInfo(model: Any): ColumnInfo? {
         val indices = this.invoke(model, "getColumnIndices") ?: return null
         val iterable = this.invoke(indices, "asIterable") as? Iterable<*> ?: return null
         val colList = iterable.toList()
-        val names = colList.map { colIdx ->
+        val names = mutableListOf<String>()
+        val types = mutableListOf<Int>()
+        for (colIdx in colList) {
             val col = this.invokeWith(model, "getColumn", colIdx)
-            this.invoke(col, "getName")?.toString() ?: "unknown"
+            names.add(this.invoke(col, "getName")?.toString() ?: "unknown")
+            types.add(this.resolveColumnJdbcType(col))
         }
-        return Pair(colList, names)
+        return ColumnInfo(colList, names, types)
+    }
+
+    /** 从 DataGrid column 对象反射获取 JDBC 类型 */
+    private fun resolveColumnJdbcType(column: Any?): Int {
+        column ?: return java.sql.Types.VARCHAR
+        // 路径1: column.getColumnType().getJdbcType()（DatabaseTableColumn → DbmsColumnType）
+        val colType = this.invoke(column, "getColumnType")
+        if (colType != null) {
+            val jdbcType = this.invoke(colType, "getJdbcType")
+            if (jdbcType is Number) return jdbcType.toInt()
+        }
+        // 路径2: column.getType()（返回 int 或枚举）
+        val typeVal = this.invoke(column, "getType")
+        if (typeVal is Number) return typeVal.toInt()
+        // 默认 VARCHAR
+        return java.sql.Types.VARCHAR
     }
 
     /** Grid 中自增/生成列的占位值 */
     private val GRID_PLACEHOLDER_VALUES = setOf("GENERATED", "DEFAULT", "AUTO_INCREMENT")
+    private val BINARY_TYPES = setOf(Types.BLOB, Types.BINARY, Types.VARBINARY, Types.LONGVARBINARY)
 
-    private fun readRowData(model: Any, rowIdx: Any, colList: List<Any?>, columnNames: List<String>): Map<String, String?> {
+    private fun readRowData(model: Any, rowIdx: Any, colInfo: ColumnInfo): Map<String, String?> {
         val row = mutableMapOf<String, String?>()
-        for ((i, colIdx) in colList.withIndex()) {
+        for ((i, colIdx) in colInfo.indices.withIndex()) {
             colIdx ?: continue
             val value = this.invokeWith(model, "getValueAt", rowIdx, colIdx)
-            val strValue = value?.toString()
-            log.debug("DML Backup GRID readRow: col=${columnNames[i]}, class=${value?.javaClass?.name}")
+            val jdbcType = colInfo.jdbcTypes[i]
+            log.debug("DML Backup GRID readRow: col=${colInfo.names[i]}, class=${value?.javaClass?.name}, jdbcType=$jdbcType")
+
             // 跳过 Grid 占位值（自增/生成列）
+            val strValue = value?.toString()
             if (strValue != null && strValue.uppercase() in GRID_PLACEHOLDER_VALUES) continue
-            // null 值和字符串 "null" 都当 null 处理
-            row[columnNames[i]] = if (strValue == null || strValue.equals("null", ignoreCase = true)) null else strValue
+
+            // 时间类型：存 epoch millis，回滚时由 JDBC 驱动处理时区
+            if ((jdbcType == Types.DATE || jdbcType == Types.TIME || jdbcType == Types.TIMESTAMP) && value is java.util.Date) {
+                row[colInfo.names[i]] = value.time.toString()
+                continue
+            }
+
+            // 按 JDBC 类型提取值
+            val extracted = this.extractGridValue(value, jdbcType)
+            row[colInfo.names[i]] = extracted
         }
         log.debug("DML Backup GRID readRow: ${row.size} columns")
         return row
     }
 
+    /** 按 JDBC 类型提取 Grid 单元格值 */
+    private fun extractGridValue(value: Any?, jdbcType: Int): String? {
+        if (value == null) return null
+        val strValue = value.toString()
+        if (strValue.equals("null", ignoreCase = true)) return null
+
+        return when (jdbcType) {
+            in BINARY_TYPES -> when (value) {
+                is ByteArray -> Base64.getEncoder().encodeToString(value)
+                else -> Base64.getEncoder().encodeToString(strValue.toByteArray())
+            }
+            Types.BIT, Types.BOOLEAN -> when (value) {
+                is Boolean -> if (value) "1" else "0"
+                is ByteArray -> { var r = 0L; for (b in value) r = (r shl 8) or (b.toLong() and 0xFF); r.toString() }
+                else -> {
+                    // Grid 可能展示为二进制字符串如 "10101010"，转为整数
+                    if (strValue.length > 1 && strValue.all { it == '0' || it == '1' }) strValue.toLong(2).toString()
+                    else strValue
+                }
+            }
+            Types.DECIMAL, Types.NUMERIC -> {
+                (value as? java.math.BigDecimal)?.toPlainString() ?: strValue
+            }
+            // DATE/TIME/TIMESTAMP 由 readRowData 存为 epoch millis，不经过这里
+            else -> strValue
+        }
+    }
+
     private val nullSafeGson = com.google.gson.GsonBuilder().serializeNulls().create()
 
     private fun saveGridBackup(operationType: String, tableName: String, connInfo: String,
-                               rows: List<Map<String, String?>>, originalSql: String, primaryKeys: String? = null) {
-        // INSERT 可能跳过了 GENERATED/DEFAULT 列，标记为 partial
+                               rows: List<Map<String, String?>>, originalSql: String,
+                               primaryKeys: String? = null, columnTypes: Map<String, Int>? = null) {
         val partial = operationType == "INSERT"
+
+        // 如果有类型信息，使用新格式
+        val json = if (columnTypes != null && columnTypes.values.any { it != Types.VARCHAR }) {
+            val wrapper = linkedMapOf<String, Any>("__types__" to columnTypes, "rows" to rows)
+            nullSafeGson.toJson(wrapper)
+        } else {
+            nullSafeGson.toJson(rows)
+        }
+
         val record = BackupRecord(
             createdAt = ZonedDateTime.now(),
             operationType = operationType,
             tableName = tableName,
             originalSql = originalSql,
             connectionInfo = connInfo,
-            backupDataJson = nullSafeGson.toJson(rows),
+            backupDataJson = json,
             rowCount = rows.size,
             primaryKeys = primaryKeys,
             partialColumns = partial

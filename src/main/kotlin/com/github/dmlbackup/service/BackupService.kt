@@ -13,7 +13,9 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
+import java.sql.Types
 import java.time.ZonedDateTime
+import java.util.Base64
 
 object BackupService {
 
@@ -30,15 +32,15 @@ object BackupService {
     }
 
     /**
-     * COUNT 预检：返回受影响行数，供 Listener 在 EDT 上判断是否需要弹窗确认
+     * COUNT 预检：返回受影响行数。必须在后台线程调用，需要 ProgressIndicator 上下文
      */
     fun countAffectedRows(console: JdbcConsole, parsed: ParsedDml): Int {
         var count = 0
-        ProgressManager.getInstance().runProcessWithProgressSynchronously({
-            val connectionPoint = console.target ?: return@runProcessWithProgressSynchronously
+        ProgressManager.getInstance().runProcess({
+            val connectionPoint = console.target ?: return@runProcess
             val guardedRef = DatabaseConnectionManager.getInstance()
                 .build(console.project, connectionPoint)
-                .createBlocking() ?: return@runProcessWithProgressSynchronously
+                .createBlocking() ?: return@runProcess
             try {
                 val remoteConn = guardedRef.get().remoteConnection
                 val schema = this.resolveSchema(console, remoteConn, parsed.tableName)
@@ -51,7 +53,7 @@ object BackupService {
             } finally {
                 guardedRef.close()
             }
-        }, "DML Backup: Checking affected rows...", true, console.project)
+        }, EmptyProgressIndicator())
         return count
     }
 
@@ -230,12 +232,17 @@ object BackupService {
     /**
      * 推断当前使用的 database/schema：
      * 1. 如果表名已含 schema 前缀（如 other_db.table），直接使用
-     * 2. 从 URL 解析
-     * 3. 从 INFORMATION_SCHEMA 查询
+     * 2. 从 Console 当前选中的 schema 获取（用户在下拉框选的库）
+     * 3. 从 URL 解析
+     * 4. 从 INFORMATION_SCHEMA 查询
      */
     private fun resolveSchema(console: JdbcConsole, remoteConn: RemoteConnection, tableName: String): String? {
         // 表名已含 schema 前缀（如 other_db.table），优先使用
         if (tableName.contains(".")) return tableName.substringBeforeLast(".")
+
+        // 从 Console 当前 namespace 获取（用户选择的库，反映 USE 切换后的状态）
+        val currentNs = console.currentNamespace?.name
+        if (!currentNs.isNullOrBlank()) return currentNs
 
         val url = console.dataSource?.url ?: ""
         val urlMatch = Regex("://[^/]+/([^?;&]+)").find(url)
@@ -265,23 +272,70 @@ object BackupService {
 
     private val nullSafeGson = com.google.gson.GsonBuilder().serializeNulls().create()
 
+    /** 二进制类型集合 */
+    private val BINARY_TYPES = setOf(Types.BLOB, Types.BINARY, Types.VARBINARY, Types.LONGVARBINARY)
+
     private fun resultSetToJson(rs: RemoteResultSet): Pair<String, Int> {
         val meta = rs.metaData
         val columnCount = meta.columnCount
         val columnNames = (1..columnCount).map { meta.getColumnName(it) }
+        val columnTypes = (1..columnCount).map { meta.getColumnType(it) }
+
+        // 构建 __types__ 映射
+        val typesMap = linkedMapOf<String, Int>()
+        for (i in 0 until columnCount) typesMap[columnNames[i]] = columnTypes[i]
 
         val rows = mutableListOf<Map<String, String?>>()
         while (rs.next()) {
             val row = linkedMapOf<String, String?>()
             for (i in 1..columnCount) {
-                val value = rs.getObject(i)
-                row[columnNames[i - 1]] = value?.toString()
+                val colType = columnTypes[i - 1]
+                val strValue = this.extractTypedValue(rs, i, colType)
+                row[columnNames[i - 1]] = strValue
             }
             rows.add(row)
         }
-        val result = nullSafeGson.toJson(rows)
+
+        // 新格式: {"__types__":{...},"rows":[...]}
+        val wrapper = linkedMapOf<String, Any>("__types__" to typesMap, "rows" to rows)
+        val result = nullSafeGson.toJson(wrapper)
         log.debug("DML Backup: resultSetToJson columns=$columnNames, rowCount=${rows.size}")
         return Pair(result, rows.size)
+    }
+
+    /** 按 JDBC 类型提取列值为字符串 */
+    private fun extractTypedValue(rs: RemoteResultSet, index: Int, jdbcType: Int): String? {
+        val obj = rs.getObject(index)
+        if (obj == null) return null
+
+        return when (jdbcType) {
+            in BINARY_TYPES -> {
+                val bytes = rs.getBytes(index) ?: return null
+                Base64.getEncoder().encodeToString(bytes)
+            }
+            Types.BIT, Types.BOOLEAN -> {
+                // MySQL BIT(1) → Boolean, BIT(N>1) → byte[]，统一存为整数字符串
+                when (obj) {
+                    is Boolean -> if (obj) "1" else "0"
+                    is ByteArray -> this.bytesToLong(obj).toString()
+                    else -> obj.toString()
+                }
+            }
+            Types.DECIMAL, Types.NUMERIC -> {
+                rs.getBigDecimal(index)?.toPlainString()
+            }
+            Types.TIMESTAMP, Types.DATE, Types.TIME -> {
+                rs.getString(index)
+            }
+            else -> obj.toString()
+        }
+    }
+
+    /** byte[] 转 Long，用于 BIT(N>1) 值 */
+    private fun bytesToLong(bytes: ByteArray): Long {
+        var result = 0L
+        for (b in bytes) result = (result shl 8) or (b.toLong() and 0xFF)
+        return result
     }
 
     private fun notifyUser(content: String, type: NotificationType) {

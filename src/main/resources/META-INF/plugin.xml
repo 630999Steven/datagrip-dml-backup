@@ -29,7 +29,7 @@
         <toolWindow id="DML Backup"
                     anchor="right"
                     factoryClass="com.github.dmlbackup.ui.BackupHistoryToolWindowFactory"
-                    icon="AllIcons.Nodes.SecurityRole"/>
+                    icon="/icons/redPanda.svg"/>
         <notificationGroup id="DML Backup" displayType="BALLOON"/>
     </extensions>
 </idea-plugin>
