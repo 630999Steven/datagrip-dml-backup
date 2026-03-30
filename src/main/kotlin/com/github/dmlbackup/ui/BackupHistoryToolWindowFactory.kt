@@ -8,6 +8,9 @@ import com.intellij.database.dataSource.DatabaseConnectionManager
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
@@ -19,6 +22,7 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.content.ContentFactory
+import com.intellij.ui.components.JBLoadingPanel
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
 import java.awt.event.MouseAdapter
@@ -80,6 +84,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
 
     private var allRecords: List<BackupRecord> = emptyList()
     private var records: List<BackupRecord> = emptyList()
+    private val loadingPanel = JBLoadingPanel(java.awt.BorderLayout(), project)
     private var selectedDataSource: String = "All"
     private var selectedDatabase: String = "All"
     private var selectedTable: String = "All"
@@ -101,8 +106,9 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         toolbar.targetComponent = this
         setToolbar(toolbar.component)
 
-        // 表格
-        setContent(ScrollPaneFactory.createScrollPane(table, 0))
+        // 表格（JBLoadingPanel 提供居中 spinner）
+        loadingPanel.add(ScrollPaneFactory.createScrollPane(table, 0))
+        setContent(loadingPanel)
 
         // 点击 ID 列选中整行 + 右键菜单 + 双击查看
         table.addMouseListener(object : MouseAdapter() {
@@ -420,30 +426,54 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             }
 
             val targetUrl = record.connectionInfo.substringAfterLast("(").removeSuffix(")")
-            val allConns = DatabaseConnectionManager.getInstance().activeConnections
             val isMySqlUrl = targetUrl.startsWith("jdbc:mysql://") || targetUrl.startsWith("jdbc:mariadb://")
-            val conn = if (isMySqlUrl) {
-                allConns.firstOrNull { it.connectionPoint.dataSource?.url == targetUrl }
-                    ?: throw IllegalStateException("Original connection '$targetUrl' is not active. Please connect to it first.")
-            } else {
-                throw IllegalStateException("Cannot determine target database from backup record. Connection info: ${record.connectionInfo}")
-            }
+            if (!isMySqlUrl) throw IllegalStateException("Cannot determine target database from backup record. Connection info: ${record.connectionInfo}")
 
-            val remoteConn = conn.remoteConnection
-            remoteConn.setAutoCommit(false)
-            try {
-                RollbackService.executeRollback(remoteConn, plan)
-                remoteConn.commit()
-            } catch (ex: Exception) {
-                remoteConn.rollback()
-                throw ex
-            } finally {
-                remoteConn.setAutoCommit(true)
-            }
+            val allConns = DatabaseConnectionManager.getInstance().activeConnections
+            val connectionPoint = allConns.firstOrNull { it.connectionPoint.dataSource?.url == targetUrl }?.connectionPoint
+                ?: throw IllegalStateException("Original connection '$targetUrl' is not active. Please connect to it first.")
 
-            BackupStorage.updateStatus(record.id, "ROLLED_BACK")
-            Messages.showInfoMessage(project, "Rollback completed! (${plan.size} statements)", "DML Backup")
-            this.loadRecords()
+            val tableName = this.extractTableName(record.tableName)
+            loadingPanel.setLoadingText("Rolling back...")
+            loadingPanel.startLoading()
+            object : Task.Backgroundable(project, "Rolling back ${record.operationType} on '$tableName'...", false) {
+                override fun run(indicator: ProgressIndicator) {
+                    indicator.isIndeterminate = true
+                    val guardedRef = DatabaseConnectionManager.getInstance()
+                        .build(project, connectionPoint)
+                        .createBlocking()
+                        ?: throw IllegalStateException("Failed to create database connection for rollback")
+                    try {
+                        val remoteConn = guardedRef.get().remoteConnection
+                        remoteConn.setAutoCommit(false)
+                        try {
+                            RollbackService.executeRollback(remoteConn, plan)
+                            remoteConn.commit()
+                        } catch (ex: Exception) {
+                            remoteConn.rollback()
+                            throw ex
+                        } finally {
+                            remoteConn.setAutoCommit(true)
+                        }
+                    } finally {
+                        guardedRef.close()
+                    }
+                }
+
+                override fun onSuccess() {
+                    loadingPanel.stopLoading()
+                    BackupStorage.updateStatus(record.id, "ROLLED_BACK")
+                    Messages.showInfoMessage(project, "Rollback completed! (${plan.size} statements)", "DML Backup")
+                    this@BackupHistoryPanel.loadRecords()
+                }
+
+                override fun onThrowable(error: Throwable) {
+                    loadingPanel.stopLoading()
+                    log.error("Rollback failed", error)
+                    Messages.showErrorDialog(project, "Rollback failed: ${error.message}", "DML Backup")
+                }
+            }.queue()
+            return
         } catch (e: Exception) {
             log.error("Rollback failed", e)
             Messages.showErrorDialog(project, "Rollback failed: ${e.message}", "DML Backup")

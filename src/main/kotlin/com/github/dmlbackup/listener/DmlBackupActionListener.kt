@@ -269,7 +269,6 @@ class DmlBackupActionListener : AnActionListener {
     private fun extractGridValue(value: Any?, jdbcType: Int): String? {
         if (value == null) return null
         val strValue = value.toString()
-        if (strValue.equals("null", ignoreCase = true)) return null
 
         return when (jdbcType) {
             in BINARY_TYPES -> when (value) {
