@@ -353,13 +353,14 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             if (proceed != Messages.YES) return
         }
 
-        // INSERT IGNORE / ON DUPLICATE KEY UPDATE 警告
+        // INSERT 不安全回滚警告（IGNORE / ON DUPLICATE KEY / 函数表达式等）
         if (record.operationType == "INSERT" && record.unsafeInsert) {
             val proceed = Messages.showYesNoDialog(
                 project,
-                "This INSERT uses IGNORE or ON DUPLICATE KEY UPDATE. " +
-                    "Rows may not have been actually inserted (ignored or updated instead). " +
-                    "Rollback DELETE may delete wrong data.\n\nContinue at your own risk?",
+                "This INSERT may not be safely rollbackable. Possible reasons:\n" +
+                    "- Uses IGNORE or ON DUPLICATE KEY UPDATE (rows may not have been actually inserted)\n" +
+                    "- Contains function calls or expressions (NOW(), UUID(), DEFAULT, etc.)\n" +
+                    "Rollback DELETE may target wrong data.\n\nContinue at your own risk?",
                 "Unsafe INSERT Rollback Warning",
                 Messages.getWarningIcon()
             )

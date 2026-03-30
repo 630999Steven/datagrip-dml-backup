@@ -2,6 +2,8 @@
 
 DataGrip 插件，在执行 DELETE / UPDATE / INSERT 前自动备份数据，支持一键回滚。仅支持 MySQL / MariaDB。
 
+**兼容版本：** DataGrip 2025.1 ~ 2025.3
+
 ## 功能
 
 - **自动备份** — 在 SQL Console 或可视化编辑器中执行 DML 时，自动备份受影响的数据

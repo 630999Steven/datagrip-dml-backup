@@ -57,23 +57,31 @@ object RollbackService {
     }
 
     /**
-     * 执行回滚计划
+     * 执行回滚计划，返回总影响行数
      */
-    fun executeRollback(remoteConn: RemoteConnection, plan: List<RollbackStatement>) {
+    fun executeRollback(remoteConn: RemoteConnection, plan: List<RollbackStatement>): Int {
+        var totalAffected = 0
         for (rstmt in plan) {
+            val affected: Int
             if (rstmt.parameters == null) {
                 val stmt = remoteConn.createStatement()
                 log.info("Executing rollback SQL: ${rstmt.sql}")
-                stmt.executeUpdate(rstmt.sql)
+                affected = stmt.executeUpdate(rstmt.sql)
                 stmt.close()
             } else {
                 val ps = remoteConn.prepareStatement(rstmt.sql)
                 rstmt.parameters.forEachIndexed { idx, param -> this.bindParam(ps, idx + 1, param) }
                 log.info("Executing typed rollback SQL: ${rstmt.sql} (${rstmt.parameters.size} params)")
-                ps.executeUpdate()
+                affected = ps.executeUpdate()
                 ps.close()
             }
+            log.info("Rollback SQL affected $affected row(s)")
+            if (affected == 0) {
+                throw IllegalStateException("Rollback aborted: statement affected 0 rows (target data may have changed). SQL: ${rstmt.sql.take(200)}")
+            }
+            totalAffected += affected
         }
+        return totalAffected
     }
 
     // ==================== 备份数据解析 ====================
@@ -149,14 +157,24 @@ object RollbackService {
         }
     }
 
-    /** INSERT 回滚 → DELETE（INSERT 备份始终为旧格式，无 types） */
+    /** INSERT 回滚 → DELETE */
     private fun generateDeleteStatements(tableName: String, data: TypedBackupData): List<RollbackStatement> {
         return data.rows.map { row ->
-            val whereClauses = row.entries.joinToString(" AND ") {
-                if (it.value == null) "`${it.key}` IS NULL"
-                else "`${it.key}` = ${this.escapeValue(it.value)}"
+            if (data.types != null) {
+                // typed 格式（Grid INSERT）：用参数化 WHERE
+                val whereClauses = row.entries.joinToString(" AND ") {
+                    if (it.value == null) "`${it.key}` IS NULL" else "`${it.key}` = ?"
+                }
+                val params = row.entries.filter { it.value != null }.map { RollbackParam(it.value, data.types[it.key] ?: Types.VARCHAR) }
+                RollbackStatement("DELETE FROM ${this.quoteTableName(tableName)} WHERE $whereClauses LIMIT 1", params)
+            } else {
+                // 旧格式（Console INSERT）：字面值拼接
+                val whereClauses = row.entries.joinToString(" AND ") {
+                    if (it.value == null) "`${it.key}` IS NULL"
+                    else "`${it.key}` = ${this.escapeValue(it.value)}"
+                }
+                RollbackStatement("DELETE FROM ${this.quoteTableName(tableName)} WHERE $whereClauses LIMIT 1", null)
             }
-            RollbackStatement("DELETE FROM ${this.quoteTableName(tableName)} WHERE $whereClauses LIMIT 1", null)
         }
     }
 
@@ -166,17 +184,21 @@ object RollbackService {
         val keys = if (primaryKeys.isNotEmpty()) primaryKeys
         else listOf(row.entries.find { it.key.equals("id", ignoreCase = true) }?.key ?: row.keys.first())
 
-        val clause = keys.joinToString(" AND ") { "`$it` = ?" }
-        val params = keys.map { RollbackParam(row[it], types[it] ?: Types.VARCHAR) }
+        val clause = keys.joinToString(" AND ") {
+            if (row[it] == null) "`$it` IS NULL" else "`$it` = ?"
+        }
+        val params = keys.filter { row[it] != null }.map { RollbackParam(row[it], types[it] ?: Types.VARCHAR) }
         return Pair(clause, params)
     }
 
     private fun buildLegacyWhereClause(row: Map<String, String?>, primaryKeys: List<String>): String {
         return if (primaryKeys.isNotEmpty()) {
-            primaryKeys.joinToString(" AND ") { pk -> "`$pk` = ${this.escapeValue(row[pk])}" }
+            primaryKeys.joinToString(" AND ") { pk ->
+                if (row[pk] == null) "`$pk` IS NULL" else "`$pk` = ${this.escapeValue(row[pk])}"
+            }
         } else {
             val pkEntry = row.entries.find { it.key.equals("id", ignoreCase = true) } ?: row.entries.first()
-            "`${pkEntry.key}` = ${this.escapeValue(pkEntry.value)}"
+            if (pkEntry.value == null) "`${pkEntry.key}` IS NULL" else "`${pkEntry.key}` = ${this.escapeValue(pkEntry.value)}"
         }
     }
 
@@ -246,5 +268,5 @@ object RollbackService {
         tableName.split(".").joinToString(".") { "`$it`" }
 
     private fun escapeValue(value: String?): String =
-        if (value == null) "NULL" else "'${value.replace("'", "''")}'"
+        if (value == null) "NULL" else "'${value.replace("\\", "\\\\").replace("'", "\\'")}'"
 }

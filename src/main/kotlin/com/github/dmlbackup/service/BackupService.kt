@@ -63,12 +63,11 @@ object BackupService {
     fun backup(console: JdbcConsole, parsed: ParsedDml, originalSql: String,
                timedOutFlag: (() -> Boolean)? = null, cancelHook: ((Runnable) -> Unit)? = null) {
         val connInfo = "${console.dataSource?.name ?: "unknown"} (${console.dataSource?.url ?: "unknown"})"
-        // 从 URL 中提取 schema，用于 INSERT 的 tableName 前缀
-        val urlSchema = console.dataSource?.url?.let { Regex("://[^/]+/([^?;&]+)").find(it)?.groupValues?.get(1) }
 
         if (parsed.type == DmlType.INSERT) {
-            // 只有表名不含 schema 前缀时才拼接 URL schema
-            val fullTableName = if (urlSchema != null && !parsed.tableName.contains(".")) "$urlSchema.${parsed.tableName}" else parsed.tableName
+            // INSERT 也统一走 resolveInsertSchema：currentNamespace > URL > 不加前缀
+            val schema = this.resolveInsertSchema(console, parsed.tableName)
+            val fullTableName = if (schema != null && !parsed.tableName.contains(".")) "$schema.${parsed.tableName}" else parsed.tableName
             this.backupInsert(parsed, originalSql, connInfo, fullTableName, timedOutFlag)
             return
         }
@@ -86,6 +85,13 @@ object BackupService {
             return
         }
         val rows = parsed.insertValues ?: return
+
+        val maxRows = DmlBackupSettings.getInstance().maxBackupRows
+        if (maxRows > 0 && rows.size > maxRows) {
+            log.warn("DML Backup: INSERT rows (${rows.size}) exceed limit ($maxRows), skipping backup")
+            this.notifyUser("INSERT ${rows.size} rows exceed backup limit ($maxRows). Backup skipped.", NotificationType.WARNING)
+            return
+        }
 
         val rowMaps = rows.map { values ->
             linkedMapOf<String, String?>().also { map ->
@@ -227,6 +233,17 @@ object BackupService {
         } finally {
             stmt.close()
         }
+    }
+
+    /**
+     * INSERT 专用：不需要数据库连接，仅从 console 元数据推断 schema
+     */
+    private fun resolveInsertSchema(console: JdbcConsole, tableName: String): String? {
+        if (tableName.contains(".")) return tableName.substringBeforeLast(".")
+        val currentNs = console.currentNamespace?.name
+        if (!currentNs.isNullOrBlank()) return currentNs
+        val url = console.dataSource?.url ?: ""
+        return Regex("://[^/]+/([^?;&]+)").find(url)?.groupValues?.get(1)
     }
 
     /**

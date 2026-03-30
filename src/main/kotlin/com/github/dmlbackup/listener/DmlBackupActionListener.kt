@@ -20,6 +20,7 @@ import com.intellij.openapi.editor.Editor
 import java.sql.Types
 import java.time.ZonedDateTime
 import java.util.Base64
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -74,7 +75,7 @@ class DmlBackupActionListener : AnActionListener {
         val maxRows = DmlBackupSettings.getInstance().maxBackupRows
         val latch = CountDownLatch(1)
         val timedOut = AtomicBoolean(false)
-        val cancelActions = mutableListOf<Runnable>()
+        val cancelActions = CopyOnWriteArrayList<Runnable>()
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 for ((originalSql, parsed, cons) in dmlStatements) {
@@ -86,6 +87,7 @@ class DmlBackupActionListener : AnActionListener {
                         // 大表保护：在后台线程做 COUNT 预检
                         if (maxRows > 0 && parsed.type != DmlType.INSERT) {
                             val count = BackupService.countAffectedRows(cons, parsed)
+                            if (timedOut.get()) break
                             if (count > maxRows) {
                                 log.warn("DML Backup: table '${parsed.tableName}' affected rows ($count) exceed limit ($maxRows), skipping backup")
                                 this.notifyUser("Table '${parsed.tableName}': affected rows ($count) exceed backup limit ($maxRows). Backup skipped.", NotificationType.WARNING)
@@ -450,7 +452,24 @@ class DmlBackupActionListener : AnActionListener {
     private fun getExecutableSql(editor: Editor): String? {
         val selectionModel = editor.selectionModel
         if (selectionModel.hasSelection()) return selectionModel.selectedText
-        return editor.document.text.trim().ifEmpty { null }
+
+        // 无选区时，按 caret 位置定位当前语句（模拟 DataGrip 的 Execute 行为）
+        val text = editor.document.text
+        if (text.isBlank()) return null
+        val caretOffset = editor.caretModel.offset
+
+        // 在原始文本上按分号拆分，记录每段的起止偏移，找到包含 caret 的那段
+        val ranges = SqlParser.splitStatementsWithOffsets(text)
+        if (ranges.size <= 1) return text.trim().ifEmpty { null }
+
+        for ((start, end) in ranges) {
+            if (caretOffset <= end) {
+                return SqlParser.removeComments(text.substring(start, end)).trim().ifEmpty { null }
+            }
+        }
+        // fallback: 返回最后一条语句
+        val (lastStart, lastEnd) = ranges.last()
+        return SqlParser.removeComments(text.substring(lastStart, lastEnd)).trim().ifEmpty { null }
     }
 
     private fun notifyUser(content: String, type: NotificationType) {
