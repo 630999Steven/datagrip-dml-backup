@@ -67,7 +67,7 @@ class DmlBackupActionListener : AnActionListener {
         }
         if (dmlStatements.isEmpty()) return
 
-        // 大表保护：EDT 上做 COUNT 预检 + 弹窗确认
+        // 大表保护：COUNT 预检 + 弹窗确认（带进度条，可取消）
         val maxRows = DmlBackupSettings.getInstance().maxBackupRows
         if (maxRows > 0) {
             for ((_, parsed, cons) in dmlStatements) {
@@ -84,6 +84,9 @@ class DmlBackupActionListener : AnActionListener {
                         )
                         if (choice != Messages.YES) return // 跳过备份，SQL 继续执行
                     }
+                } catch (_: com.intellij.openapi.progress.ProcessCanceledException) {
+                    log.info("DML Backup: count check cancelled by user for ${parsed.tableName}, skipping backup")
+                    return // 用户取消了预检，跳过备份
                 } catch (ex: Exception) {
                     log.warn("DML Backup: count check failed for ${parsed.tableName}", ex)
                 }
@@ -94,6 +97,7 @@ class DmlBackupActionListener : AnActionListener {
 
         val latch = CountDownLatch(1)
         val timedOut = AtomicBoolean(false)
+        val cancelActions = mutableListOf<Runnable>()
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 for ((originalSql, parsed, cons) in dmlStatements) {
@@ -102,11 +106,15 @@ class DmlBackupActionListener : AnActionListener {
                         break
                     }
                     try {
-                        BackupService.backup(cons, parsed, originalSql, timedOutFlag = { timedOut.get() })
+                        BackupService.backup(cons, parsed, originalSql,
+                            timedOutFlag = { timedOut.get() },
+                            cancelHook = { cancelActions.add(it) })
                         log.info("DML Backup: backup completed for ${parsed.type} on ${parsed.tableName}")
                     } catch (ex: Exception) {
-                        log.error("DML Backup: backup failed for ${parsed.tableName}", ex)
-                        this.notifyUser("Backup failed for ${parsed.type} on '${parsed.tableName}': ${ex.message}", NotificationType.ERROR)
+                        if (!timedOut.get()) {
+                            log.error("DML Backup: backup failed for ${parsed.tableName}", ex)
+                            this.notifyUser("Backup failed for ${parsed.type} on '${parsed.tableName}': ${ex.message}", NotificationType.ERROR)
+                        }
                     }
                 }
             } finally {
@@ -116,6 +124,8 @@ class DmlBackupActionListener : AnActionListener {
 
         if (!latch.await(10, TimeUnit.SECONDS)) {
             timedOut.set(true)
+            // 取消正在执行的 DB 查询
+            cancelActions.forEach { try { it.run() } catch (_: Exception) {} }
             log.warn("DML Backup: backup timed out after 10s, proceeding with action")
             this.notifyUser("DML backup timed out. This operation was NOT backed up, SQL will execute normally.", NotificationType.WARNING)
         }

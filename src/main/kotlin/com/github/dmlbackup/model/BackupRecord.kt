@@ -19,5 +19,7 @@ data class BackupRecord(
     /** 主键列名，JSON 数组格式如 ["id"] 或 ["order_id","product_id"]，可为 null（旧数据兼容） */
     val primaryKeys: String? = null,
     /** INSERT 时是否只指定了部分列 */
-    val partialColumns: Boolean = false
+    val partialColumns: Boolean = false,
+    /** INSERT IGNORE / ON DUPLICATE KEY UPDATE 等不可靠回滚的变体 */
+    val unsafeInsert: Boolean = false
 )

@@ -51,8 +51,8 @@ object BackupStorage {
             val ps = conn.prepareStatement(
                 """
                 INSERT INTO backup_record (created_at, operation_type, table_name, original_sql,
-                    connection_info, backup_data_json, row_count, status, primary_keys, partial_columns)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    connection_info, backup_data_json, row_count, status, primary_keys, partial_columns, unsafe_insert)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent()
             )
             ps.setString(1, record.createdAt.format(TIME_FMT))
@@ -65,6 +65,7 @@ object BackupStorage {
             ps.setString(8, record.status)
             ps.setString(9, record.primaryKeys)
             ps.setInt(10, if (record.partialColumns) 1 else 0)
+            ps.setInt(11, if (record.unsafeInsert) 1 else 0)
             ps.executeUpdate()
 
             val rs = conn.createStatement().executeQuery("SELECT last_insert_rowid()")
@@ -150,6 +151,9 @@ object BackupStorage {
         if ("partial_columns" !in columns) {
             conn.createStatement().execute("ALTER TABLE backup_record ADD COLUMN partial_columns INTEGER DEFAULT 0")
         }
+        if ("unsafe_insert" !in columns) {
+            conn.createStatement().execute("ALTER TABLE backup_record ADD COLUMN unsafe_insert INTEGER DEFAULT 0")
+        }
     }
 
     private fun getConnection(): Connection {
@@ -169,7 +173,8 @@ object BackupStorage {
             rowCount = rs.getInt("row_count"),
             status = rs.getString("status"),
             primaryKeys = rs.getString("primary_keys"),
-            partialColumns = rs.getInt("partial_columns") == 1
+            partialColumns = rs.getInt("partial_columns") == 1,
+            unsafeInsert = rs.getInt("unsafe_insert") == 1
         )
     }
 }

@@ -58,7 +58,8 @@ object BackupService {
     /**
      * 执行备份：DELETE/UPDATE 通过 SELECT 备份，INSERT 直接从 SQL 解析值
      */
-    fun backup(console: JdbcConsole, parsed: ParsedDml, originalSql: String, timedOutFlag: (() -> Boolean)? = null) {
+    fun backup(console: JdbcConsole, parsed: ParsedDml, originalSql: String,
+               timedOutFlag: (() -> Boolean)? = null, cancelHook: ((Runnable) -> Unit)? = null) {
         val connInfo = "${console.dataSource?.name ?: "unknown"} (${console.dataSource?.url ?: "unknown"})"
         // 从 URL 中提取 schema，用于 INSERT 的 tableName 前缀
         val urlSchema = console.dataSource?.url?.let { Regex("://[^/]+/([^?;&]+)").find(it)?.groupValues?.get(1) }
@@ -70,7 +71,7 @@ object BackupService {
             return
         }
 
-        this.backupSelectBased(console, parsed, originalSql, connInfo, timedOutFlag)
+        this.backupSelectBased(console, parsed, originalSql, connInfo, timedOutFlag, cancelHook)
     }
 
     /**
@@ -103,7 +104,8 @@ object BackupService {
             connectionInfo = connInfo,
             backupDataJson = nullSafeGson.toJson(rowMaps),
             rowCount = rows.size,
-            partialColumns = true  // SQL INSERT 只备份了指定列，回滚 DELETE 条件可能不完整
+            partialColumns = true,  // SQL INSERT 只备份了指定列，回滚 DELETE 条件可能不完整
+            unsafeInsert = parsed.unsafeInsert
         )
 
         val id = BackupStorage.save(record)
@@ -114,7 +116,8 @@ object BackupService {
     /**
      * DELETE/UPDATE 备份：通过 SELECT FOR UPDATE 查询备份原始数据
      */
-    private fun backupSelectBased(console: JdbcConsole, parsed: ParsedDml, originalSql: String, connInfo: String, timedOutFlag: (() -> Boolean)? = null) {
+    private fun backupSelectBased(console: JdbcConsole, parsed: ParsedDml, originalSql: String, connInfo: String,
+                                   timedOutFlag: (() -> Boolean)? = null, cancelHook: ((Runnable) -> Unit)? = null) {
         ProgressManager.getInstance().runProcess({
             val connectionPoint = console.target
                 ?: throw IllegalStateException("No connection point found for current console")
@@ -126,6 +129,10 @@ object BackupService {
 
             try {
                 val remoteConn = guardedRef.get().remoteConnection
+                // 注册取消回调：超时时关闭连接以中断正在执行的查询
+                cancelHook?.invoke(Runnable {
+                    try { guardedRef.close() } catch (_: Exception) {}
+                })
 
                 val schema = this.resolveSchema(console, remoteConn, parsed.tableName)
                 if (schema != null) {

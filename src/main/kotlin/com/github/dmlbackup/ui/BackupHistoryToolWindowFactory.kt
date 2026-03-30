@@ -354,20 +354,16 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         }
 
         // INSERT IGNORE / ON DUPLICATE KEY UPDATE 警告
-        if (record.operationType == "INSERT") {
-            val sql = record.originalSql.uppercase()
-            val isUnsafe = sql.contains("INSERT IGNORE") || sql.contains("ON DUPLICATE KEY UPDATE")
-            if (isUnsafe) {
-                val proceed = Messages.showYesNoDialog(
-                    project,
-                    "This INSERT uses IGNORE or ON DUPLICATE KEY UPDATE. " +
-                        "Rows may not have been actually inserted (ignored or updated instead). " +
-                        "Rollback DELETE may delete wrong data.\n\nContinue at your own risk?",
-                    "Unsafe INSERT Rollback Warning",
-                    Messages.getWarningIcon()
-                )
-                if (proceed != Messages.YES) return
-            }
+        if (record.operationType == "INSERT" && record.unsafeInsert) {
+            val proceed = Messages.showYesNoDialog(
+                project,
+                "This INSERT uses IGNORE or ON DUPLICATE KEY UPDATE. " +
+                    "Rows may not have been actually inserted (ignored or updated instead). " +
+                    "Rollback DELETE may delete wrong data.\n\nContinue at your own risk?",
+                "Unsafe INSERT Rollback Warning",
+                Messages.getWarningIcon()
+            )
+            if (proceed != Messages.YES) return
         }
 
         val confirm = Messages.showYesNoDialog(
