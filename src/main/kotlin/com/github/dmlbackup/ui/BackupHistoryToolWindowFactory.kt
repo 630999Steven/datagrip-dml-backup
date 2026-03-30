@@ -82,6 +82,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
     private var records: List<BackupRecord> = emptyList()
     private var selectedDataSource: String = "All"
     private var selectedDatabase: String = "All"
+    private var selectedTable: String = "All"
 
     init {
         // ActionToolbar
@@ -91,6 +92,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             addSeparator()
             add(DataSourceFilterAction())
             add(DatabaseFilterAction())
+            add(TableFilterAction())
             addSeparator()
             add(ClearAction())
             add(SettingsAction())
@@ -148,21 +150,21 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         }
     }
 
-    private inner class DataSourceFilterAction : DumbAwareAction("DS: All", "Filter by data source", AllIcons.General.Filter) {
+    private inner class DataSourceFilterAction : DumbAwareAction("DS: All", "Filter by data source", icons.DatabaseIcons.Dbms) {
         override fun getActionUpdateThread() = ActionUpdateThread.EDT
         override fun update(e: AnActionEvent) { e.presentation.text = "DS: $selectedDataSource" }
         override fun actionPerformed(e: AnActionEvent) {
             val group = DefaultActionGroup()
             group.add(object : DumbAwareAction("All") {
                 override fun actionPerformed(e: AnActionEvent) {
-                    selectedDataSource = "All"; selectedDatabase = "All"
+                    selectedDataSource = "All"; selectedDatabase = "All"; selectedTable = "All"
                     this@BackupHistoryPanel.filterRecords()
                 }
             })
             allRecords.map { extractDataSourceName(it.connectionInfo) }.distinct().forEach { ds ->
                 group.add(object : DumbAwareAction(ds) {
                     override fun actionPerformed(e: AnActionEvent) {
-                        selectedDataSource = ds; selectedDatabase = "All"
+                        selectedDataSource = ds; selectedDatabase = "All"; selectedTable = "All"
                         this@BackupHistoryPanel.filterRecords()
                     }
                 })
@@ -174,7 +176,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         }
     }
 
-    private inner class DatabaseFilterAction : DumbAwareAction("DB: All", "Filter by database", AllIcons.Nodes.DataSchema) {
+    private inner class DatabaseFilterAction : DumbAwareAction("DB: All", "Filter by database", icons.DatabaseIcons.Schema) {
         override fun getActionUpdateThread() = ActionUpdateThread.EDT
         override fun update(e: AnActionEvent) {
             e.presentation.text = "DB: $selectedDatabase"
@@ -184,7 +186,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             val group = DefaultActionGroup()
             group.add(object : DumbAwareAction("All") {
                 override fun actionPerformed(e: AnActionEvent) {
-                    selectedDatabase = "All"
+                    selectedDatabase = "All"; selectedTable = "All"
                     this@BackupHistoryPanel.filterRecords()
                 }
             })
@@ -192,13 +194,45 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
             filteredByDs.map { extractDatabaseName(it.tableName) }.filter { it.isNotEmpty() }.distinct().forEach { db ->
                 group.add(object : DumbAwareAction(db) {
                     override fun actionPerformed(e: AnActionEvent) {
-                        selectedDatabase = db
+                        selectedDatabase = db; selectedTable = "All"
                         this@BackupHistoryPanel.filterRecords()
                     }
                 })
             }
             val popup = JBPopupFactory.getInstance().createActionGroupPopup(
                 "Select Database", group, e.dataContext, JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, false
+            )
+            popup.showUnderneathOf(e.inputEvent?.component ?: this@BackupHistoryPanel)
+        }
+    }
+
+    private inner class TableFilterAction : DumbAwareAction("Table: All", "Filter by table", AllIcons.Nodes.DataSchema) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(e: AnActionEvent) {
+            e.presentation.text = "Table: $selectedTable"
+            e.presentation.isEnabled = selectedDatabase != "All"
+        }
+        override fun actionPerformed(e: AnActionEvent) {
+            val group = DefaultActionGroup()
+            group.add(object : DumbAwareAction("All") {
+                override fun actionPerformed(e: AnActionEvent) {
+                    selectedTable = "All"
+                    this@BackupHistoryPanel.filterRecords()
+                }
+            })
+            val filteredByDb = allRecords
+                .filter { extractDataSourceName(it.connectionInfo) == selectedDataSource }
+                .filter { extractDatabaseName(it.tableName) == selectedDatabase }
+            filteredByDb.map { extractTableName(it.tableName) }.distinct().forEach { tbl ->
+                group.add(object : DumbAwareAction(tbl) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        selectedTable = tbl
+                        this@BackupHistoryPanel.filterRecords()
+                    }
+                })
+            }
+            val popup = JBPopupFactory.getInstance().createActionGroupPopup(
+                "Select Table", group, e.dataContext, JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, false
             )
             popup.showUnderneathOf(e.inputEvent?.component ?: this@BackupHistoryPanel)
         }
@@ -222,6 +256,9 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         }
         if (selectedDatabase != "All") {
             records = records.filter { this.extractDatabaseName(it.tableName) == selectedDatabase }
+        }
+        if (selectedTable != "All") {
+            records = records.filter { this.extractTableName(it.tableName) == selectedTable }
         }
 
         tableModel.rowCount = 0
