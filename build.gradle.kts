@@ -24,6 +24,9 @@ dependencies {
 
 intellijPlatform {
     buildSearchableOptions = false
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
+    }
     pluginConfiguration {
         id = "com.github.dmlbackup"
         name = providers.gradleProperty("pluginName")
