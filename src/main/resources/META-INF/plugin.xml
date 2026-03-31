@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.dmlbackup</id>
     <name>DML Backup</name>
-    <vendor>dml-backup</vendor>
+    <vendor url="https://github.com/630999Steven/datagrip-dml-backup">dml-backup</vendor>
     <description><![CDATA[
     Automatically backup data before executing DELETE/UPDATE/INSERT statements in DataGrip (MySQL only).
     Provides one-click rollback from the backup history panel.
