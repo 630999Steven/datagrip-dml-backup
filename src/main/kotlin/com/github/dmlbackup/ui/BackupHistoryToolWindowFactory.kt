@@ -14,15 +14,18 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.ScrollPaneFactory
-import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.components.JBLoadingPanel
+import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
 import java.awt.event.MouseAdapter
@@ -34,7 +37,7 @@ import javax.swing.table.DefaultTableModel
 class BackupHistoryToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = BackupHistoryPanel(project)
+        val panel = BackupHistoryPanel(project, toolWindow.disposable)
         val content = ContentFactory.getInstance().createContent(panel, "", false)
         toolWindow.contentManager.addContent(content)
 
@@ -47,7 +50,7 @@ class BackupHistoryToolWindowFactory : ToolWindowFactory {
     }
 }
 
-class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(true, false) {
+class BackupHistoryPanel(private val project: Project, parentDisposable: Disposable) : SimpleToolWindowPanel(true, false) {
 
     private val log = Logger.getInstance(BackupHistoryPanel::class.java)
     private val timeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -82,9 +85,12 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         columnModel.getColumn(7).preferredWidth = JBUI.scale(70)
     }
 
+    private val loadingPanel = JBLoadingPanel(java.awt.BorderLayout(), parentDisposable).apply {
+        add(ScrollPaneFactory.createScrollPane(table, 0))
+    }
+    private var rolling = false
     private var allRecords: List<BackupRecord> = emptyList()
     private var records: List<BackupRecord> = emptyList()
-    private val loadingPanel = JBLoadingPanel(java.awt.BorderLayout(), project)
     private var selectedDataSource: String = "All"
     private var selectedDatabase: String = "All"
     private var selectedTable: String = "All"
@@ -106,8 +112,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         toolbar.targetComponent = this
         setToolbar(toolbar.component)
 
-        // 表格（JBLoadingPanel 提供居中 spinner）
-        loadingPanel.add(ScrollPaneFactory.createScrollPane(table, 0))
+        // 表格
         setContent(loadingPanel)
 
         // 点击 ID 列选中整行 + 右键菜单 + 双击查看
@@ -135,7 +140,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
 
     private inner class RollbackAction : DumbAwareAction("Rollback", "Rollback selected record", AllIcons.Actions.Rollback) {
         override fun getActionUpdateThread() = ActionUpdateThread.EDT
-        override fun update(e: AnActionEvent) { e.presentation.isEnabled = table.selectedRow >= 0 }
+        override fun update(e: AnActionEvent) { e.presentation.isEnabled = !rolling && table.selectedRow >= 0 }
         override fun actionPerformed(e: AnActionEvent) { this@BackupHistoryPanel.doRollback() }
     }
 
@@ -291,6 +296,36 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
 
     // ==================== Helpers ====================
 
+    /** 在插件面板中央偏上弹出 Yes/No 确认框 */
+    private fun askYesNo(title: String, message: String, icon: javax.swing.Icon = Messages.getQuestionIcon()): Boolean {
+        val owner = this
+        val dialog = object : DialogWrapper(owner, false) {
+            init {
+                this.title = title
+                setOKButtonText(Messages.getYesButton())
+                setCancelButtonText(Messages.getNoButton())
+                init()
+            }
+            override fun createCenterPanel(): JComponent {
+                val root = JPanel(java.awt.BorderLayout(JBUI.scale(14), 0))
+                root.border = JBUI.Borders.empty(6, 2, 0, 12)
+                val iconLabel = JLabel(icon)
+                iconLabel.verticalAlignment = SwingConstants.TOP
+                root.add(iconLabel, java.awt.BorderLayout.WEST)
+                root.add(JLabel("<html><body style='width:220px'>${message.replace("\n", "<br>")}</body></html>"), java.awt.BorderLayout.CENTER)
+                return root
+            }
+        }
+        dialog.setInitialLocationCallback {
+            val dlgSize = dialog.window.size
+            val loc = owner.locationOnScreen
+            val dim = owner.size
+            java.awt.Point(loc.x + (dim.width - dlgSize.width) / 2, loc.y + (dim.height - dlgSize.height) / 3)
+        }
+        dialog.show()
+        return dialog.isOK
+    }
+
     private fun extractTableName(tableName: String): String = tableName.substringAfterLast(".")
     private fun extractDatabaseName(tableName: String): String =
         if (tableName.contains(".")) tableName.substringBeforeLast(".") else ""
@@ -353,26 +388,20 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
 
     private fun doClear() {
         if (records.isEmpty()) return
-        val confirm = Messages.showYesNoDialog(
-            project,
-            "Delete all ${records.size} backup record(s) under current filter?\n\nThis cannot be undone.",
-            "Clear Backup Records",
-            Messages.getWarningIcon()
-        )
-        if (confirm != Messages.YES) return
+        if (!this.askYesNo(
+                "Clear Backup Records",
+                "Delete all ${records.size} backup record(s) under current filter?\n\nThis cannot be undone.",
+                Messages.getWarningIcon())) return
         BackupStorage.deleteByIds(records.map { it.id })
         this.loadRecords()
     }
 
     private fun doDeleteSelected() {
         val record = this.getSelectedRecord() ?: return
-        val confirm = Messages.showYesNoDialog(
-            project,
-            "Delete backup record #${record.id} (${record.operationType} on '${this.extractTableName(record.tableName)}')?\n\nThis cannot be undone.",
-            "Delete Record",
-            Messages.getWarningIcon()
-        )
-        if (confirm != Messages.YES) return
+        if (!this.askYesNo(
+                "Delete Record",
+                "Delete backup record #${record.id} (${record.operationType} on '${this.extractTableName(record.tableName)}')?\n\nThis cannot be undone.",
+                Messages.getWarningIcon())) return
         BackupStorage.deleteById(record.id)
         this.loadRecords()
     }
@@ -386,38 +415,32 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
         }
 
         if (record.partialColumns && record.operationType == "INSERT") {
-            val proceed = Messages.showYesNoDialog(
-                project,
-                "This INSERT did not specify all columns. Rollback may not be precise " +
-                    "(rows with default values in unspecified columns may be incorrectly matched).\n\nContinue?",
-                "Partial Columns Warning",
-                Messages.getWarningIcon()
-            )
-            if (proceed != Messages.YES) return
+            if (!this.askYesNo(
+                    "Partial Columns Warning",
+                    "This INSERT did not specify all columns. Rollback may not be precise " +
+                        "(rows with default values in unspecified columns may be incorrectly matched).\n\nContinue?",
+                    Messages.getWarningIcon())) return
         }
 
-        // INSERT 不安全回滚警告（IGNORE / ON DUPLICATE KEY / 函数表达式等）
         if (record.operationType == "INSERT" && record.unsafeInsert) {
-            val proceed = Messages.showYesNoDialog(
-                project,
-                "This INSERT may not be safely rollbackable. Possible reasons:\n" +
-                    "- Uses IGNORE or ON DUPLICATE KEY UPDATE (rows may not have been actually inserted)\n" +
-                    "- Contains function calls or expressions (NOW(), UUID(), DEFAULT, etc.)\n" +
-                    "Rollback DELETE may target wrong data.\n\nContinue at your own risk?",
-                "Unsafe INSERT Rollback Warning",
-                Messages.getWarningIcon()
-            )
-            if (proceed != Messages.YES) return
+            if (!this.askYesNo(
+                    "Unsafe INSERT Rollback Warning",
+                    "This INSERT may not be safely rollbackable. Possible reasons:\n" +
+                        "- Uses IGNORE or ON DUPLICATE KEY UPDATE (rows may not have been actually inserted)\n" +
+                        "- Contains function calls or expressions (NOW(), UUID(), DEFAULT, etc.)\n" +
+                        "Rollback DELETE may target wrong data.\n\nContinue at your own risk?",
+                    Messages.getWarningIcon())) return
         }
 
-        val confirm = Messages.showYesNoDialog(
-            project,
-            "Rollback ${record.operationType} on '${this.extractTableName(record.tableName)}' (${record.rowCount} rows)?\n\n${record.originalSql}",
-            "Confirm Rollback",
-            Messages.getQuestionIcon()
-        )
-        if (confirm != Messages.YES) return
+        val tableName = this.extractTableName(record.tableName)
+        if (!this.askYesNo(
+                "Confirm Rollback",
+                "Rollback ${record.operationType} on '$tableName' (${record.rowCount} rows)?\n\n${record.originalSql}")) return
 
+        this.executeRollback(record)
+    }
+
+    private fun executeRollback(record: BackupRecord) {
         try {
             val plan = RollbackService.generateRollbackPlan(record)
             if (plan.isEmpty()) {
@@ -434,7 +457,7 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
                 ?: throw IllegalStateException("Original connection '$targetUrl' is not active. Please connect to it first.")
 
             val tableName = this.extractTableName(record.tableName)
-            loadingPanel.setLoadingText("Rolling back...")
+            rolling = true
             loadingPanel.startLoading()
             object : Task.Backgroundable(project, "Rolling back ${record.operationType} on '$tableName'...", false) {
                 override fun run(indicator: ProgressIndicator) {
@@ -461,19 +484,19 @@ class BackupHistoryPanel(private val project: Project) : SimpleToolWindowPanel(t
                 }
 
                 override fun onSuccess() {
+                    rolling = false
                     loadingPanel.stopLoading()
                     BackupStorage.updateStatus(record.id, "ROLLED_BACK")
-                    Messages.showInfoMessage(project, "Rollback completed! (${plan.size} statements)", "DML Backup")
                     this@BackupHistoryPanel.loadRecords()
                 }
 
                 override fun onThrowable(error: Throwable) {
+                    rolling = false
                     loadingPanel.stopLoading()
                     log.error("Rollback failed", error)
                     Messages.showErrorDialog(project, "Rollback failed: ${error.message}", "DML Backup")
                 }
             }.queue()
-            return
         } catch (e: Exception) {
             log.error("Rollback failed", e)
             Messages.showErrorDialog(project, "Rollback failed: ${e.message}", "DML Backup")
